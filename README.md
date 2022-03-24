@@ -1,2 +1,2 @@
 # openedge-ade
-OpenEdge ADE code
+OpenEdge ADE code, 11.7.x
