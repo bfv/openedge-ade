@@ -1,5 +1,5 @@
 /************************************************
-Copyright (c) 2016, 2019 by Progress Software Corporation. All rights reserved.
+Copyright (c) 2016, 2019-2020 by Progress Software Corporation. All rights reserved.
 *************************************************/
 /*------------------------------------------------------------------------
     File        : ILogWriter

@@ -121,9 +121,9 @@ class OpenEdge.BusinessRules.RulesServerConnection use-widget-pool implements IS
 	   @return longchar The results of the service call. */
 	method public longchar InvokeDecisionService(input pcRequestDocument as longchar):
         define variable lcResponseDocument as longchar no-undo.
-        define variable xmlDoc  as handle no-undo.
+        define variable xmlDoc as handle no-undo.
         define variable xmlNode as handle no-undo.
-
+                
         if not this-object:Connected then
             this-object:Connect().
         
@@ -141,7 +141,7 @@ class OpenEdge.BusinessRules.RulesServerConnection use-widget-pool implements IS
         return lcResponseDocument.
         catch oSoapError as SoapFaultError:
             define variable oAppError as AppError no-undo.
-            
+                     
             oAppError = new AppError(oSoapError:GetMessage(1)).
             IF oSoapError:GetMessageNum(1) EQ 11506 THEN DO:
                 create x-document xmlDoc.
@@ -156,7 +156,7 @@ class OpenEdge.BusinessRules.RulesServerConnection use-widget-pool implements IS
             ELSE DO:
                 oAppError:AddMessage(oSoapError:SoapFault:soap-fault-code, oSoapError:GetMessageNum(1)).
                 oAppError:AddMessage(oSoapError:SoapFault:soap-fault-actor, oSoapError:GetMessageNum(1)).
-            END.
+            END.                
             undo, throw oAppError.
         end catch.
         finally:
@@ -180,7 +180,7 @@ class OpenEdge.BusinessRules.RulesServerConnection use-widget-pool implements IS
         @return logical Whether the decision service is deployed of not. */
     method public logical IsDecisionServiceAvailable(input pcServiceName as character, 
                                                      input pdVersion as decimal):
-        return true.                                                 
+        return true.                                                
     end method.
     
     /** Returns true if any version of a specified Decision Service is deployed

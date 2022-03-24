@@ -1,5 +1,5 @@
 /************************************************
-Copyright (c)  2013 by Progress Software Corporation. All rights reserved.
+Copyright (c)  2013, 2021 by Progress Software Corporation. All rights reserved.
 *************************************************/
 /*------------------------------------------------------------------------
     File        : Iterator
@@ -14,8 +14,12 @@ block-level on error undo, throw.
 
 using OpenEdge.Core.Collections.ICollection.
 using OpenEdge.Core.Collections.IIterator.
-using OpenEdge.Core.Collections.Iterator.
+using OpenEdge.Core.String.
+using Progress.Lang.AppError.
 using Progress.Lang.Object.
+using OpenEdge.Core.Decimal.
+using OpenEdge.Core.Integer.
+using OpenEdge.Core.TimeStamp.
 
 class OpenEdge.Core.Collections.Iterator use-widget-pool implements IIterator :
     /*------------------------------------------------------------------------------
@@ -32,8 +36,8 @@ class OpenEdge.Core.Collections.Iterator use-widget-pool implements IIterator :
     end constructor.
     
     constructor public Iterator (poCol as ICollection,tt as handle,ofield as char, sortfield as char):
-        this-object(poCol,tt,ofield,sortfield,'').            
-    end.
+        this-object(poCol,tt,ofield,sortfield,'').
+    end constructor.
     
     constructor public Iterator (poCol as ICollection,tt as handle,ofield as char, sortfield as char, querystring as char):
         super ().    
@@ -62,7 +66,7 @@ class OpenEdge.Core.Collections.Iterator use-widget-pool implements IIterator :
                                     then ' by ' + sortExp
                                     else ''). 
         QueryHandle:forward-only = forwardOnly.
-    end. 
+    end method. 
        
     method public logical HasNext(  ):
         define variable offend as logical no-undo.
@@ -84,17 +88,34 @@ class OpenEdge.Core.Collections.Iterator use-widget-pool implements IIterator :
     end method.
 
     method public Object Next(  ):
-        define variable nextobject as Object no-undo.
-            
+        define variable lcVal as longchar no-undo.
+        
         QueryHandle:get-next().
         if bufferHandle:avail then 
-        do:
-            nextobject = ObjectFieldHandle:buffer-value().
-            return nextobject.
-        end.    
-        else 
+        case ObjectFieldHandle:data-type:
+            when 'progress.lang.object':u then
+                return ObjectFieldHandle:buffer-value().
+            when 'character':u then
+                return new String(ObjectFieldHandle:buffer-value()).
+            when 'clob':u then
+            do:
+                assign lcVal = ObjectFieldHandle:buffer-value().
+                return new String(lcVal).
+            end.
+            when 'decimal':u then
+                return new Decimal(ObjectFieldHandle:buffer-value()).
+            when 'integer':u or
+            when 'int64':u then
+                return new Integer(ObjectFieldHandle:buffer-value()).
+            when 'date':u or
+            when 'datetime':u or
+            when 'datetime-tz':u then
+                return new TimeStamp(ObjectFieldHandle:buffer-value()).
+            otherwise
+                undo, throw new AppError(substitute('Cannot convert primitive type &1 to an object', ObjectFieldHandle:data-type), 0).
+        end case.
+        else
             return ?.
-/*          return if bufferHandle:avail then objectFieldHandle:buffer-value() else ?.*/
     end method.
     
     /* removes the current item from the underlying collection  */

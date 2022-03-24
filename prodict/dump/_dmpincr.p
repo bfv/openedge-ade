@@ -1,7 +1,7 @@
 /***********************************************************************
-* Copyright (C) 2005-2018 by Progress Software Corporation. All rights *
-  reserved.  Prior versions of this work may contain portions          *
-* contributed by participants of Possenet.                             *
+* Copyright (C) 2005-2014,2020,2021 by Progress Software Corporation.  *
+* All rights reserved. Prior versions of this work may contain         *
+* portions contributed by participants of Possenet.                    *
 *                                                                      *
 ************************************************************************/
 
@@ -91,6 +91,16 @@ History:
     Rkamboj     09/30/11    Added CATEGORY field support for incremental dump.
     rkamboj     03/30/2012  Added check for sql-92 tables with unsupported ABL prop - OE00208080
     rkamboj     11/14/13    Added support to generate incremental for IS-PARTITIONED for _file and IS-LOCAL for _Index. For table partitioning feature.
+    tmasood     05/20/2020  Support for encryption
+    tmasood     11/05/2020  Merge code changes from 11.7.x
+    tmasood     11/11/2020  Include four new sections to support online schema change feature.
+    kberlia     12/31/2020  Modified the code to generate the drop constraint statment properly in the DF file.
+    tmasood     01/04/2021  Fixed issue with dump of update multi-tenant table
+    tmasood     05/19/2021  Handle the blank value passed in DUMP_INC_INDEXMODE
+    tmasood     08/03/2021  Generate incrdump.e in temp-dir if write access are not provided
+    tmasood     10/18/2021  DROP FIELD opearation goes under PostDeploy section 
+	tmasood     11/24/2021  Index field should not be dumped under PostDeploy section
+	tmasood     11/26/2021  Fixed error 138 while dumping LOB field
 */
 
 using Progress.Lang.*.
@@ -130,7 +140,7 @@ DEFINE            VARIABLE seq            AS CHARACTER               NO-UNDO.
 DEFINE            VARIABLE seq2           AS CHARACTER               NO-UNDO.
 DEFINE            VARIABLE i              AS INTEGER                 NO-UNDO.
 DEFINE            VARIABLE j              AS INTEGER                 NO-UNDO.
-DEFINE            VARIABLE l              AS LOGICAL                 NO-UNDO.
+DEFINE            VARIABLE lAvl           AS LOGICAL                 NO-UNDO.
 DEFINE            VARIABLE stopped        AS LOGICAL   INITIAL TRUE  NO-UNDO.
 DEFINE            VARIABLE tmp_Field-name AS CHARACTER               NO-UNDO.
 /* 02/01/29 vap (IZ# 1525) */
@@ -157,9 +167,33 @@ DEFINE            VARIABLE Constr1        AS CHARACTER               NO-UNDO.
 DEFINE            VARIABLE isIndexDel     AS LOGICAL           NO-UNDO.
 DEFINE            VARIABLE indxRecid      AS RECID             NO-UNDO.
 DEFINE            VARIABLE l_sys-obj      AS CHARACTER               NO-UNDO.
-define            variable isDictDbPartitionEnabled  as logical no-undo.
-define            variable isDictDb2PartitionEnabled as logical no-undo.
+define            variable isDictDbPartitionEnabled   as logical no-undo.
+define            variable isDictDb2PartitionEnabled  as logical no-undo.
+define            variable isDictDbEncryptionEnabled  as logical no-undo.
+define            variable isDictDb2EncryptionEnabled as logical no-undo.
 
+DEFINE VARIABLE cIndexMode     AS CHARACTER NO-UNDO.
+DEFINE VARIABLE cPredeploy     AS CHARACTER NO-UNDO.
+DEFINE VARIABLE cTrigger       AS CHARACTER NO-UNDO.
+DEFINE VARIABLE cPostdeploy    AS CHARACTER NO-UNDO.
+DEFINE VARIABLE cOffline       AS CHARACTER NO-UNDO.
+DEFINE VARIABLE tmpfile1       AS CHARACTER NO-UNDO.
+DEFINE VARIABLE tmpfile2       AS CHARACTER NO-UNDO.
+DEFINE VARIABLE tmpfile3       AS CHARACTER NO-UNDO.
+DEFINE VARIABLE tmpfile4       AS CHARACTER NO-UNDO.
+DEFINE VARIABLE lfirst         AS LOGICAL   NO-UNDO INITIAL true.
+DEFINE VARIABLE lmt            AS LOGICAL   NO-UNDO.
+DEFINE VARIABLE ltp            AS LOGICAL   NO-UNDO.
+DEFINE VARIABLE lAvalOffline   AS LOGICAL   NO-UNDO.
+DEFINE VARIABLE lAvalPreDeploy AS LOGICAL NO-UNDO.
+DEFINE VARIABLE lAvalTrigger   AS LOGICAL NO-UNDO.
+DEFINE VARIABLE iDumpTrigger   AS INTEGER  NO-UNDO.
+DEFINE VARIABLE hStreamToWrite AS HANDLE NO-UNDO.
+DEFINE VARIABLE hDumpToStream  AS HANDLE NO-UNDO.
+DEFINE VARIABLE lDrpFldOnline  AS LOGICAL NO-UNDO INITIAL FALSE.
+DEFINE STREAM in-str.
+
+DEFINE NEW SHARED VARIABLE errFileName  AS CHARACTER INITIAL "incrdump.e" NO-UNDO.
 DEFINE NEW SHARED VARIABLE df-con AS CHARACTER EXTENT 7    NO-UNDO.
 DEFINE NEW SHARED VARIABLE dfseq  AS INTEGER INITIAL 1 NO-UNDO.
 DEFINE NEW SHARED TEMP-TABLE df-info NO-UNDO
@@ -198,10 +232,10 @@ DEFINE VARIABLE new_lang AS CHARACTER EXTENT 63 NO-UNDO INITIAL [
   /*24*/ " is in this AREA.  See the ""PROSTRCT""",
   /*25*/ "entry in the {&PRO_DISPLAY_NAME} Database Administration Guide and",
   /*26*/ "Reference for details.",
-  /*27*/ "Warnings have been written to a file called "{&errFileName}"",
-  /*28*/ "located in your current working directory.  Please check",   
-  /*29*/ "this file prior to loading this incremental .df.  Failure",
-  /*30*/ "to do so could result in errors or other undesirable results.",
+  /*27*/ "Warnings have been written to a file called ""incrdump.e""",
+  /*28*/ "located in your current working or session temp directory.",   
+  /*29*/ "Please check this file prior to loading this incremental .df.",
+  /*30*/ "Failure to do so could result in errors or other undesirable results.",
   /*31*/ "loading this .df or an error will result.  The new table",
   /*32*/ "The target database does not have encryption enabled." ,
   /*33*/ "The .df may contain encryption policy information but you will have",
@@ -361,7 +395,8 @@ PROCEDURE checkEPolicy:
         /* we will try to compare encryption current policies. Must be enabled
            in both, or we won't do anything with them.
         */
-        myEPolicy[1] = NEW prodict.sec._sec-pol-util(LDBNAME("DICTDB")).
+        IF isDictDbEncryptionEnabled THEN
+           myEPolicy[1] = NEW prodict.sec._sec-pol-util(LDBNAME("DICTDB")).
         CATCH ae AS PROGRESS.Lang.AppError:
            /* if encryption is not enabled, we simply ignore it */
             IF ae:GetMessageNum(1) NE 14889 THEN
@@ -375,7 +410,8 @@ PROCEDURE checkEPolicy:
         /* we will try to compare encryption current policies. Must be enabled
            in both, or we won't do anything with them.
         */
-        myEPolicy[2] = NEW prodict.sec._sec-pol-util(LDBNAME("DICTDB2")).
+        IF isDictDb2EncryptionEnabled THEN
+           myEPolicy[2] = NEW prodict.sec._sec-pol-util(LDBNAME("DICTDB2")).
         CATCH ae AS PROGRESS.Lang.AppError:
             /* if encryption is not enabled, we simply ignore it */
             IF ae:GetMessageNum(1) NE 14889 THEN
@@ -402,7 +438,7 @@ PROCEDURE checkEPolicy:
                         VIEW-AS ALERT-BOX WARNING BUTTONS OK.
 
                     ASSIGN s_errorsLogged = TRUE.         
-                    OUTPUT STREAM err-log TO {&errFileName} APPEND NO-ECHO.
+                    OUTPUT STREAM err-log TO VALUE(errFileName) APPEND NO-ECHO.
 
                     PUT STREAM err-log UNFORMATTED
                          new_lang[32]    SKIP
@@ -449,7 +485,7 @@ PROCEDURE checkEPolicy:
             END.
 
             ASSIGN s_errorsLogged = TRUE.         
-            OUTPUT STREAM err-log TO {&errFileName} APPEND NO-ECHO.
+            OUTPUT STREAM err-log TO VALUE(errFileName) APPEND NO-ECHO.
 
             PUT STREAM err-log UNFORMATTED
                  new_lang[36]   SKIP
@@ -517,7 +553,7 @@ PROCEDURE checkObjectAttributes:
                         VIEW-AS ALERT-BOX WARNING BUTTONS OK.
 
                     ASSIGN s_errorsLogged = TRUE.         
-                    OUTPUT STREAM err-log TO {&errFileName} APPEND NO-ECHO.
+                    OUTPUT STREAM err-log TO VALUE(errFileName) APPEND NO-ECHO.
 
                     PUT STREAM err-log UNFORMATTED
                          new_lang[37]    SKIP
@@ -560,7 +596,7 @@ PROCEDURE checkObjectAttributes:
             END.
 
             ASSIGN s_errorsLogged = TRUE.         
-            OUTPUT STREAM err-log TO {&errFileName} APPEND NO-ECHO.
+            OUTPUT STREAM err-log TO VALUE(errFileName) APPEND NO-ECHO.
 
             PUT STREAM err-log UNFORMATTED
                  new_lang[38]   SKIP
@@ -580,7 +616,6 @@ PROCEDURE checkObjectAttributes:
 END.
 
 /* mainline code **********************************************************/
-
 /* 02/01/29 vap (IZ# 1525) */
 ASSIGN p-batchmode = SESSION:BATCH-MODE.
 /*IF p-batchmode THEN DO: */
@@ -591,6 +626,23 @@ ASSIGN p-batchmode = SESSION:BATCH-MODE.
   RUN set_Variables           IN h_dmputil(p-rename-file, p-debug-mode, p-silentincrd).
   RUN load_Rename_Definitions IN h_dmputil.
 /*END. */  /* batchmode */
+ASSIGN cIndexMode = OS-GETENV ("DUMP_INC_INDEXMODE").
+/* Check write access */
+FILE-INFO:FILE-NAME = errFileName.
+IF FILE-INFO:FULL-PATHNAME ne ? AND INDEX(FILE-INFO:FILE-TYPE, "W":u) = 0 THEN
+  ASSIGN errFileName = SESSION:TEMP-DIRECTORY + errFileName.
+FILE-INFO:FILE-NAME = ?.  
+
+IF user_env[43] = "Yes" THEN
+   ASSIGN hPreDeployStream  = STREAM pre-str:HANDLE
+          hTriggersStream   = STREAM trig-str:HANDLE
+          hPostDeployStream = STREAM post-str:HANDLE
+          hOfflineStream    = STREAM offln-str:HANDLE.
+ELSE
+   ASSIGN hPreDeployStream  = STREAM ddl:HANDLE
+          hTriggersStream   = STREAM ddl:HANDLE
+          hPostDeployStream = STREAM ddl:HANDLE
+          hOfflineStream    = STREAM ddl:HANDLE.
 
 IF  ENTRY(1,user_env[5]) = "" 
  OR ENTRY(1,user_env[5]) = ?  THEN assign user_env[5] = "<internal defaults apply>". 
@@ -635,6 +687,19 @@ if avail dictdb2._Database-feature and dictdb2._Database-feature._dbfeature_enab
    assign isDictDb2PartitionEnabled = yes.
 else
    assign isDictDb2PartitionEnabled = no.
+
+/* Check if encryption feature is enable or not for both database. */   
+find dictdb._Database-feature where dictdb._Database-feature._DBFeature_Name = "Encryption" no-lock no-error.
+if avail dictdb._Database-feature and dictdb._Database-feature._dbfeature_enabled="1" then
+   assign isDictDbEncryptionEnabled = yes.
+else
+   assign isDictDbEncryptionEnabled = no.
+   
+find dictdb2._Database-feature where dictdb2._Database-feature._DBFeature_Name = "Encryption" no-lock no-error.
+if avail dictdb2._Database-feature and dictdb2._Database-feature._dbfeature_enabled="1" then
+   assign isDictDb2EncryptionEnabled = yes.
+else
+   assign isDictDb2EncryptionEnabled = no.   
     
 /* If either db is non-progress, it means one or both of the comparisons is with a 
  * "foreign" schema image.  As there are no real objects, just schema definitions 
@@ -647,6 +712,23 @@ IF s_DbType1 = "PROGRESS" AND s_DbType2 = "PROGRESS" THEN
 
 IF s_DbType1 = "PROGRESS" AND s_DbType2 = "PROGRESS" THEN
   RUN checkObjectAttributes.
+  
+IF user_env[43] = "Yes" THEN DO:
+    run adecomm/_tmpfile.p (INPUT "-pre",   INPUT ".txt", OUTPUT tmpfile1).
+    run adecomm/_tmpfile.p (INPUT "-trig",  INPUT ".txt", OUTPUT tmpfile2).
+    run adecomm/_tmpfile.p (INPUT "-post",  INPUT ".txt", OUTPUT tmpfile3).
+    run adecomm/_tmpfile.p (INPUT "-offln", INPUT ".txt", OUTPUT tmpfile4).
+
+    OUTPUT STREAM pre-str   TO VALUE(tmpfile1).
+    OUTPUT STREAM trig-str  TO VALUE(tmpfile2).
+    OUTPUT STREAM post-str  TO VALUE(tmpfile3).
+    OUTPUT STREAM offln-str TO VALUE(tmpfile4).
+    
+    PUT STREAM-HANDLE hPreDeployStream  UNFORMATTED "# BEGIN Pre_Deploy_Section"  SKIP(1).
+    PUT STREAM-HANDLE hTriggersStream   UNFORMATTED "# BEGIN Trigger_Section"     SKIP(1).
+    PUT STREAM-HANDLE hPostDeployStream UNFORMATTED "# BEGIN Post_Deploy_Section" SKIP(1).
+    PUT STREAM-HANDLE hOfflineStream    UNFORMATTED "# BEGIN Offline_Section"     SKIP(1).    
+END.
 
 DO ON STOP UNDO, LEAVE
    ON ERROR UNDO, LEAVE:
@@ -686,7 +768,7 @@ DO ON STOP UNDO, LEAVE
 
                                
         s_errorsLogged = TRUE.
-        OUTPUT STREAM err-log TO {&errFileName} APPEND NO-ECHO.
+        OUTPUT STREAM err-log TO VALUE(errFileName) APPEND NO-ECHO.
         p-log-line = new_lang[3] + '"' + DICTDB2._File._File-Name + '"' + 
                      new_lang[4].  /* 02/01/29 vap (IZ# 1525) */
         PUT STREAM err-log UNFORMATTED p-log-line SKIP.
@@ -787,7 +869,7 @@ DO ON STOP UNDO, LEAVE
   ans = FALSE.
   FOR EACH missing:
     ans = TRUE.
-    PUT STREAM ddl UNFORMATTED
+    PUT STREAM-HANDLE hOfflineStream UNFORMATTED
       'DROP TABLE "' missing.name '"' SKIP.
     IF NOT p-batchmode and not p-silentincrd THEN DO: /* 02/01/29 vap (IZ# 1525) */
       DISPLAY missing.name @ fil WITH FRAME seeking.
@@ -795,14 +877,15 @@ DO ON STOP UNDO, LEAVE
     END.
     DELETE missing.
   END.
-  IF ans THEN PUT STREAM ddl UNFORMATTED SKIP(1).
+  IF ans THEN 
+    PUT STREAM-HANDLE hOfflineStream UNFORMATTED SKIP(1).
   
   /* handle renamed files */
   ans = FALSE.
   FOR EACH table-list WHERE table-list.t1-name <> table-list.t2-name
                         AND table-list.t2-name <> ?:
     ASSIGN ans = TRUE.
-    PUT STREAM ddl UNFORMATTED
+    PUT STREAM-HANDLE hOfflineStream UNFORMATTED
       'RENAME TABLE "' table-list.t2-name
       '" TO "' table-list.t1-name '"' SKIP.
     IF NOT p-batchmode and not p-silentincrd THEN DO: /* 02/01/29 vap (IZ# 1525) */
@@ -810,11 +893,12 @@ DO ON STOP UNDO, LEAVE
       DISPLAY table-list.t1-name @ fil2 WITH FRAME seeking.
     END.
   END.
-  IF ans THEN PUT STREAM ddl UNFORMATTED SKIP(1).
+  IF ans THEN 
+    PUT STREAM-HANDLE hOfflineStream UNFORMATTED SKIP(1).
   IF isDictdbMultiTenant = yes and isDictdb2MultiTenant = no THEN  /* IF one database is MT and other one is non MT. Give warning message */
   DO:
      ASSIGN s_errorsLogged = TRUE.        
-     OUTPUT STREAM err-log TO {&errFileName} APPEND NO-ECHO.
+     OUTPUT STREAM err-log TO VALUE(errFileName) APPEND NO-ECHO.
          
        PUT STREAM err-log UNFORMATTED new_lang[3] +
                   '"' + LDBNAME("DICTDB") + '"' + new_lang[39]     SKIP
@@ -824,7 +908,7 @@ DO ON STOP UNDO, LEAVE
    ELSE IF isDictdbMultiTenant = no and isDictdb2MultiTenant = yes THEN
    DO:
       ASSIGN s_errorsLogged = TRUE.        
-      OUTPUT STREAM err-log TO {&errFileName} APPEND NO-ECHO.
+      OUTPUT STREAM err-log TO VALUE(errFileName) APPEND NO-ECHO.
          
        PUT STREAM err-log UNFORMATTED new_lang[3] +
                   '"' + LDBNAME("DICTDB") + '"' + new_lang[41]     SKIP
@@ -835,7 +919,7 @@ DO ON STOP UNDO, LEAVE
   IF isDictDbPartitionEnabled = yes and isDictDb2PartitionEnabled = no THEN  /* IF one database is TP and other one is non TP. Give warning message */
   DO:
      ASSIGN s_errorsLogged = TRUE.        
-     OUTPUT STREAM err-log TO {&errFileName} APPEND NO-ECHO.
+     OUTPUT STREAM err-log TO VALUE(errFileName) APPEND NO-ECHO.
          
        PUT STREAM err-log UNFORMATTED new_lang[3] +
                   '"' + LDBNAME("DICTDB") + '"' + new_lang[56]     SKIP
@@ -845,7 +929,7 @@ DO ON STOP UNDO, LEAVE
    ELSE IF isDictDbPartitionEnabled = no and isDictDb2PartitionEnabled = yes THEN
    DO:
       ASSIGN s_errorsLogged = TRUE.        
-      OUTPUT STREAM err-log TO {&errFileName} APPEND NO-ECHO.
+      OUTPUT STREAM err-log TO VALUE(errFileName) APPEND NO-ECHO.
          
        PUT STREAM err-log UNFORMATTED new_lang[3] +
                   '"' + LDBNAME("DICTDB") + '"' + new_lang[58]     SKIP
@@ -894,7 +978,7 @@ DO ON STOP UNDO, LEAVE
        IF NOT AVAILABLE DICTDB2._Area THEN
        DO:
          ASSIGN s_errorsLogged = TRUE.
-         OUTPUT STREAM err-log TO {&errFileName} APPEND NO-ECHO.
+         OUTPUT STREAM err-log TO VALUE(errFileName) APPEND NO-ECHO.
          PUT STREAM err-log UNFORMATTED new_lang[3] +
             '"' + IF AVAIL DICTDB._Area THEN DICTDB._Area._Area-name ELSE '' + '"' + new_lang[21]     SKIP
             new_lang[22]                                           SKIP
@@ -907,7 +991,7 @@ DO ON STOP UNDO, LEAVE
        IF isDictdb2MultiTenant = no and DICTDB._File._File-attributes[1] = yes THEN
        DO:
           ASSIGN s_errorsLogged = TRUE.
-             OUTPUT STREAM err-log TO {&errFileName} APPEND NO-ECHO.
+             OUTPUT STREAM err-log TO VALUE(errFileName) APPEND NO-ECHO.
                PUT STREAM err-log UNFORMATTED new_lang[3] +
                         '"' + DICTDB._File._File-name + '"' + new_lang[43]     SKIP
                         '"' + LDBNAME("DICTDB")       + '"' + new_lang[44]     SKIP
@@ -918,7 +1002,7 @@ DO ON STOP UNDO, LEAVE
             AND DICTDB._File._File-attributes[1] = no and available DICTDB2._File and DICTDB2._File._File-attributes[1] = yes THEN
        DO:
            ASSIGN s_errorsLogged = TRUE.
-             OUTPUT STREAM err-log TO {&errFileName} APPEND NO-ECHO.
+             OUTPUT STREAM err-log TO VALUE(errFileName) APPEND NO-ECHO.
                PUT STREAM err-log UNFORMATTED new_lang[3] +
                         '"' + DICTDB._File._File-name + '"' + new_lang[43]     SKIP
                         '"' + LDBNAME("DICTDB2")      + '"' + new_lang[49]    SKIP
@@ -1018,7 +1102,9 @@ DO ON STOP UNDO, LEAVE
     FOR EACH index-list:
       DELETE index-list.
     END.
-
+    ASSIGN lmt = FALSE
+           ltp = FALSE.
+ 
       /* write out appropriate file definition changes */
     ASSIGN
       j      = 1
@@ -1026,12 +1112,11 @@ DO ON STOP UNDO, LEAVE
       ddl[1] = 'UPDATE TABLE "' + DICTDB._File._File-name + '"'.
     /*RUN dctquot IN h_dmputil (DICTDB._File._File-Attributes[1],'"',OUTPUT c).*/
     IF DICTDB._File._File-Attributes[1] = yes AND AVAILABLE DICTDB2._File and DICTDB2._File._File-Attributes[1] = no THEN
-    ASSIGN j = j + 1
-           ddl[j] = "  MULTITENANT " + STRING(DICTDB._File._File-Attributes[1]) .
+    ASSIGN lmt    = true.
     ELSE IF DICTDB._File._File-Attributes[1] = no AND AVAILABLE DICTDB2._File AND DICTDB2._File._File-Attributes[1] = yes THEN  
     DO:
         ASSIGN s_errorsLogged = TRUE.
-        OUTPUT STREAM err-log TO {&errFileName} APPEND NO-ECHO.
+        OUTPUT STREAM err-log TO VALUE(errFileName) APPEND NO-ECHO.
             PUT STREAM err-log UNFORMATTED new_lang[3] +
                         '"' + DICTDB._File._File-name  + '"'  + new_lang[43]     SKIP
                         '"' + LDBNAME("DICTDB2")       + '"'  + new_lang[49]     SKIP
@@ -1117,7 +1202,7 @@ DO ON STOP UNDO, LEAVE
         If not DICTDB._File._File-Attributes[3] and DICTDB2._File._File-Attributes[3] then
         do:
             ASSIGN s_errorsLogged = TRUE.
-            OUTPUT STREAM err-log TO {&errFileName} APPEND NO-ECHO.
+            OUTPUT STREAM err-log TO VALUE(errFileName) APPEND NO-ECHO.
                 PUT STREAM err-log UNFORMATTED new_lang[3] +
                         '"' + DICTDB._File._File-name + '"' + new_lang[53]     SKIP
                         '"' + LDBNAME("DICTDB")       + '"' + new_lang[54]     SKIP
@@ -1125,8 +1210,7 @@ DO ON STOP UNDO, LEAVE
             OUTPUT STREAM err-log CLOSE.    
         end.  
         else if DICTDB._File._File-Attributes[3] then do : 
-          ASSIGN j      = j + 1
-                 ddl[j] = '  IS-PARTITIONED '.
+          ASSIGN ltp    = true.
         end.
     end.
     /* let's cache the encryption info and object attributes in temp-tables */
@@ -1168,7 +1252,8 @@ DO ON STOP UNDO, LEAVE
                                                  OUTPUT DATASET dsObjAttrs2 BY-REFERENCE). 
        END.
     END.
-
+    ASSIGN iDumpTrigger = j.
+    
     /* deal with file triggers */
     /* 1st, find ones to be deleted */
     FOR EACH DICTDB2._File-trig OF DICTDB2._File:
@@ -1202,16 +1287,49 @@ DO ON STOP UNDO, LEAVE
                + """".
     END.
     
- 
-  
-    /* don't write out ddl[1] if j = 1 (i.e., we only have table header) */
-    IF j > 1 THEN 
-      DO i = 1 TO j + 1:
-        IF ddl[i] = "" THEN  /* this puts an extra skip after the last one */
-          PUT STREAM ddl UNFORMATTED SKIP(1).
-        ELSE
-          PUT STREAM ddl UNFORMATTED ddl[i] SKIP.
-      END.
+    ASSIGN hDumpToStream = hPreDeployStream.
+
+   /* don't write out ddl[1] if j = 1 (i.e., we only have table header), unless we have set lmt or ltp */
+    IF j > 1 OR lmt OR ltp THEN DO:
+          /* Write the UPDATE TABLE if there is more than mt or tp*/
+          IF iDumpTrigger > 1 OR user_env[43] = "NO" THEN
+             PUT STREAM-HANDLE hDumpToStream UNFORMATTED ddl[1] SKIP.
+
+          IF lmt or ltp THEN DO:
+             /* We need to write UPDATE TABLE to offline section too */
+             IF hDumpToStream <> hOfflineStream THEN
+                PUT STREAM-HANDLE hOfflineStream UNFORMATTED ddl[1] SKIP.
+             
+             /* Multitenant & Table Parition goes to offline section */ 
+             IF lmt THEN
+                 PUT STREAM-HANDLE hOfflineStream UNFORMATTED "  MULTITENANT " DICTDB._File._File-Attributes[1] SKIP.
+             IF ltp THEN
+                  PUT STREAM-HANDLE hOfflineStream UNFORMATTED '  IS-PARTITIONED ' SKIP.
+
+             IF hDumpToStream <> hOfflineStream THEN
+                PUT STREAM-HANDLE hOfflineStream UNFORMATTED SKIP(1).
+          END.
+              
+          /* start at 2 to skip the UPDATE TABLE line, we already handled above */
+          DO i = 2 TO j + 1:
+             IF ddl[i] = "" THEN  /* this puts an extra skip after the last one */
+                PUT STREAM-HANDLE hDumpToStream UNFORMATTED SKIP(1).
+             ELSE DO:
+                IF i = iDumpTrigger + 1 THEN DO:
+                 /* processing triggers and not all under the offline section, so need to write
+                    them to the triggers section, which needs to start with UPDATE TABLE.
+                    First end the one in the pre-deploy section by adding a newline, then move
+                    on to the triggers stream and write the UPDATE TABLE line before writing the
+                    next lines */
+                   IF iDumpTrigger > 1 THEN
+                     PUT STREAM-HANDLE hDumpToStream UNFORMATTED SKIP(1).
+                   hDumpToStream = hTriggersStream.
+                   PUT STREAM-HANDLE hDumpToStream UNFORMATTED ddl[1] SKIP.
+                END.
+                PUT STREAM-HANDLE hDumpToStream UNFORMATTED ddl[i] SKIP.
+             END.
+          END.
+    END.
   
     /* build missing field list for rename/delete determination */
     FOR EACH DICTDB2._Field OF DICTDB2._File BY DICTDB2._Field._field-rpos:
@@ -1350,12 +1468,13 @@ DO ON STOP UNDO, LEAVE
          (DICTDB._Field._Data-type <> DICTDB2._Field._Data-type OR
           DICTDB._Field._Extent    <> DICTDB2._Field._Extent)   THEN NEXT.
 
-      PUT STREAM ddl UNFORMATTED
-        'RENAME FIELD "' field-list.f2-name
-        '" OF "' DICTDB._File._File-name
-        '" TO "' field-list.f1-name '"' SKIP.
+      PUT STREAM-HANDLE hPreDeployStream UNFORMATTED
+          'RENAME FIELD "' field-list.f2-name
+          '" OF "' DICTDB._File._File-name
+          '" TO "' field-list.f1-name '"' SKIP.
     END.
-    IF ans THEN PUT STREAM ddl UNFORMATTED SKIP(1).
+    IF ans THEN 
+       PUT STREAM-HANDLE hPreDeployStream UNFORMATTED SKIP(1).
   
     ASSIGN i-to-int64 = 0.
 
@@ -1368,14 +1487,14 @@ DO ON STOP UNDO, LEAVE
       IF NOT p-batchmode and not p-silentincrd THEN  /* 02/01/29 vap (IZ# 1525) */
         DISPLAY field-list.f1-name @ fld2 WITH FRAME seeking.
 
-      ASSIGN l = AVAILABLE DICTDB2._Field
+      ASSIGN lAvl = AVAILABLE DICTDB2._Field
              to-int64 = FALSE.
 
       /* 20060220-021 
          In 10.1A, SQL timestamp is now datetime, in which case it's not a
          difference, so we need to check if the dype if 34.
       */
-      IF l THEN DO:
+      IF lAvl THEN DO:
 
         IF DICTDB._Field._Data-type <> DICTDB2._Field._Data-type THEN DO:
             
@@ -1405,7 +1524,7 @@ DO ON STOP UNDO, LEAVE
         END.
       END.
       
-      IF l AND (ans OR DICTDB._Field._Extent <> DICTDB2._Field._Extent) THEN DO:
+      IF lAvl AND (ans OR DICTDB._Field._Extent <> DICTDB2._Field._Extent) THEN DO:
 
         /* If DICTDB2 field is part of a primary index, we cannot simply drop it.
          * instead, we will rename it to something else, and delete it
@@ -1417,26 +1536,26 @@ DO ON STOP UNDO, LEAVE
           /* field is part of primary index, don't DROP*/
           RUN tmp-name IN h_dmputil (INPUT DICTDB2._Field._Field-name,
                                      OUTPUT tmp_Field-name).
-          PUT STREAM ddl UNFORMATTED
+          PUT STREAM-HANDLE hOfflineStream UNFORMATTED
             'RENAME FIELD "' DICTDB2._Field._Field-name
             '" OF "' DICTDB2._File._File-name
             '" TO "' tmp_Field-name '"' SKIP.
           CREATE missing. 
-          ASSIGN missing.name = tmp_Field-name. /*record name to 'DROP' later*/
-                            l = false.          
+          ASSIGN missing.name    = tmp_Field-name. /*record name to 'DROP' later*/
+                 lAvl            = false.          
         END.
         ELSE IF inindex(INPUT RECID(DICTDB2._File),
                         INPUT RECID(DICTDB2._Field)) THEN  DO:
         
           RUN tmp-name IN h_dmputil (INPUT DICTDB2._Field._Field-name,
                                      OUTPUT tmp_Field-name).
-          PUT STREAM ddl UNFORMATTED
+          PUT STREAM-HANDLE hOfflineStream UNFORMATTED
             'RENAME FIELD "' DICTDB2._Field._Field-name
             '" OF "' DICTDB2._File._File-name
             '" TO "' tmp_Field-name '"' SKIP.
           CREATE missing. 
           ASSIGN missing.name = tmp_Field-name. /*record name to 'DROP' later*/
-                            l = false.     
+                 lAvl         = false.     
         END.
         ELSE DO: /* is not in a primary index, we can DROP it now */
         
@@ -1449,18 +1568,28 @@ DO ON STOP UNDO, LEAVE
           ASSIGN drop-list.file-name  = DICTDB._File._File-Name
                  drop-list.f1-name    = field-list.f1-name
                  drop-list.f2-name    = field-list.f2-name.
-          PUT STREAM ddl UNFORMATTED
-            'DROP FIELD "' DICTDB._Field._Field-name
-            '" OF "' DICTDB._File._File-name '"' SKIP.
+          /* Cannot drop an LOB field online 
+            In one transaction, only one field can be dropped as online. PostDeploy will have one DROP FIELD operation  */         
+          IF NOT (DICTDB2._Field._Data-type = "CLOB" OR DICTDB2._Field._Data-type = "BLOB") AND NOT lDrpFldOnline 
+             AND NOT inindex(INPUT RECID(DICTDB2._File), INPUT RECID(DICTDB2._Field)) THEN DO:
+            PUT STREAM-HANDLE hPostDeployStream UNFORMATTED
+              'DROP FIELD "' DICTDB._Field._Field-name
+              '" OF "' DICTDB._File._File-name '"' SKIP.
+            lDrpFldOnline = TRUE.  
+          END.    
+          ELSE
+            PUT STREAM-HANDLE hOfflineStream UNFORMATTED
+              'DROP FIELD "' DICTDB._Field._Field-name
+              '" OF "' DICTDB._File._File-name '"' SKIP.    
           RELEASE DICTDB2._Field.
-          l = FALSE.
+          lAvl = FALSE.
         END.
       END.
-      /* If l is true we're updating otherwise we're adding */
+      /* If lAvl is true we're updating otherwise we're adding */
       /* we are checking if case-sensitive is diffrent in both db's field 
        If they are changes we have to check if it is part of any index. If it is, then we have to drop index and 
        then recreate. */
-      IF l and DICTDB._Field._Fld-case <> DICTDB2._Field._Fld-case THEN 
+      IF lAvl and DICTDB._Field._Fld-case <> DICTDB2._Field._Fld-case THEN 
       DO:                                                               
           FIND FIRST DICTDB2._Index-Field WHERE DICTDB2._Index-Field._Field-recid = RECID(DICTDB2._Field) NO-LOCK NO-ERROR.
           IF AVAIL(DICTDB2._Index-Field) THEN
@@ -1472,7 +1601,7 @@ DO ON STOP UNDO, LEAVE
               DO:
                  ASSIGN isIndexDel = yes
                         indxRecid  = RECID(DICTDB2._Index).
-                 PUT STREAM ddl UNFORMATTED
+                 PUT STREAM-HANDLE hOfflineStream UNFORMATTED
                  'DROP INDEX "' DICTDB2._Index._Index-Name
                  '" ON "' DICTDB2._File._File-Name '"' SKIP(1).
               END.
@@ -1481,92 +1610,92 @@ DO ON STOP UNDO, LEAVE
           END.
       END.
       ASSIGN ddl    = ""
-             ddl[1] = (IF l THEN "UPDATE" ELSE "ADD")
+             ddl[1] = (IF lAvl THEN "UPDATE" ELSE "ADD")
                       + ' FIELD "' + DICTDB._Field._Field-name
                       + '" OF "' + DICTDB._File._File-name + '"'
-                      + (IF l AND NOT to-int64 THEN "" ELSE " AS " + DICTDB._Field._Data-type).
+                      + (IF lAvl AND NOT to-int64 THEN "" ELSE " AS " + DICTDB._Field._Data-type).
 
       /* don't write lines with unknown or blank value (like we do in _dmpdefs.p) */
-      IF NOT l AND (DICTDB._Field._Desc = ? OR DICTDB._Field._Desc = '') THEN .
+      IF NOT lAvl AND (DICTDB._Field._Desc = ? OR DICTDB._Field._Desc = '') THEN .
       ELSE DO:
           RUN dctquot IN h_dmputil (DICTDB._Field._Desc,'"',OUTPUT c).
-          IF NOT l OR COMPARE(DICTDB._Field._Desc,"NE",DICTDB2._Field._Desc,"RAW") THEN 
+          IF NOT lAvl OR COMPARE(DICTDB._Field._Desc,"NE",DICTDB2._Field._Desc,"RAW") THEN 
                ddl[2] = "  DESCRIPTION " + c.
       END.
 
       RUN dctquot IN h_dmputil (DICTDB._Field._Format,'"',OUTPUT c).
-      IF NOT l OR COMPARE(DICTDB._Field._Format,"NE",DICTDB2._Field._Format,"RAW") THEN 
+      IF NOT lAvl OR COMPARE(DICTDB._Field._Format,"NE",DICTDB2._Field._Format,"RAW") THEN 
         ddl[3] = "  FORMAT " + c.
       
-      IF NOT l AND (DICTDB._Field._Format-SA = ? OR DICTDB._Field._Format-SA = '' ) THEN .
+      IF NOT lAvl AND (DICTDB._Field._Format-SA = ? OR DICTDB._Field._Format-SA = '' ) THEN .
       ELSE DO:
           RUN dctquot IN h_dmputil (DICTDB._Field._Format-SA,'"',OUTPUT c).
-          IF NOT l OR 
+          IF NOT lAvl OR 
               /* ignore this field if they are a combination of ? and empty strings */
               (CHECK_SA_FIELDS(DICTDB._Field._Format-SA,DICTDB2._Field._Format-SA) AND 
               COMPARE(DICTDB._Field._Format-SA,"NE",DICTDB2._Field._Format-SA,"RAW")) THEN
             ddl[4] = "  FORMAT-SA " + c.
       END.
 
-      IF NOT l OR DICTDB._Field._Field-rpos <> DICTDB2._Field._Field-rpos THEN 
+      IF NOT lAvl OR DICTDB._Field._Field-rpos <> DICTDB2._Field._Field-rpos THEN 
         ddl[5] = "  POSITION " + STRING(DICTDB._Field._Field-rpos).       
 
       RUN dctquot IN h_dmputil (DICTDB._Field._Initial,'"',OUTPUT c).
-      IF NOT l OR COMPARE(DICTDB._Field._Initial,"NE",DICTDB2._Field._Initial,"RAW") THEN
+      IF NOT lAvl OR COMPARE(DICTDB._Field._Initial,"NE",DICTDB2._Field._Initial,"RAW") THEN
         ddl[6] = "  INITIAL " + c.
 
-      IF NOT l AND (DICTDB._Field._Initial-SA = ? OR DICTDB._Field._Initial-SA = '' ) THEN .
+      IF NOT lAvl AND (DICTDB._Field._Initial-SA = ? OR DICTDB._Field._Initial-SA = '' ) THEN .
       ELSE DO:
           RUN dctquot IN h_dmputil (DICTDB._Field._Initial-SA,'"',OUTPUT c).
-          IF NOT l OR 
+          IF NOT lAvl OR 
                /* ignore this field if they are a combination of ? and empty strings */
                (CHECK_SA_FIELDS(DICTDB._Field._Initial-SA,DICTDB2._Field._Initial-SA) AND 
                  COMPARE(DICTDB._Field._Initial-SA,"NE",DICTDB2._Field._Initial-SA,"RAW")) THEN
             ddl[7] = "  INITIAL-SA " + c.
       END.
 
-      IF NOT l AND (DICTDB._Field._Help = ? OR DICTDB._Field._Help = '' ) THEN .
+      IF NOT lAvl AND (DICTDB._Field._Help = ? OR DICTDB._Field._Help = '' ) THEN .
       ELSE DO:
           RUN dctquot IN h_dmputil (DICTDB._Field._Help,'"',OUTPUT c).
-          IF NOT l OR COMPARE(DICTDB._Field._Help,"NE",DICTDB2._Field._Help,"RAW") THEN
+          IF NOT lAvl OR COMPARE(DICTDB._Field._Help,"NE",DICTDB2._Field._Help,"RAW") THEN
             ddl[8] = "  HELP " + c.
       END.
 
-      IF NOT l AND (DICTDB._Field._Help-SA = ? OR DICTDB._Field._Help-SA = '' ) THEN .
+      IF NOT lAvl AND (DICTDB._Field._Help-SA = ? OR DICTDB._Field._Help-SA = '' ) THEN .
       ELSE DO:
           RUN dctquot IN h_dmputil (DICTDB._Field._Help-SA,'"',OUTPUT c).
-          IF NOT l OR COMPARE(DICTDB._Field._Help-SA,"NE",DICTDB2._Field._Help-SA,"RAW") THEN
+          IF NOT lAvl OR COMPARE(DICTDB._Field._Help-SA,"NE",DICTDB2._Field._Help-SA,"RAW") THEN
             ddl[9] = "  HELP-SA " + c.
       END.
 
-      IF NOT l AND DICTDB._Field._Label = ? THEN .
+      IF NOT lAvl AND DICTDB._Field._Label = ? THEN .
       ELSE DO:
           RUN dctquot IN h_dmputil (DICTDB._Field._Label,'"',OUTPUT c).
-          IF NOT l OR COMPARE(DICTDB._Field._Label,"NE",DICTDB2._Field._Label,"RAW") THEN
+          IF NOT lAvl OR COMPARE(DICTDB._Field._Label,"NE",DICTDB2._Field._Label,"RAW") THEN
             ddl[10] = "  LABEL " + c.
       END.
 
-      IF NOT l AND (DICTDB._Field._Label-SA = ? OR DICTDB._Field._Label-SA = '' ) THEN .
+      IF NOT lAvl AND (DICTDB._Field._Label-SA = ? OR DICTDB._Field._Label-SA = '' ) THEN .
       ELSE DO:
           RUN dctquot IN h_dmputil (DICTDB._Field._Label-SA,'"',OUTPUT c).
-          IF NOT l OR 
+          IF NOT lAvl OR 
                  /* ignore this field if they are a combination of ? and empty strings */
                  (CHECK_SA_FIELDS(DICTDB._Field._Label-SA,DICTDB2._Field._Label-SA) AND 
                  COMPARE(DICTDB._Field._Label-SA,"NE",DICTDB2._Field._Label-SA,"RAW")) THEN
             ddl[11] = "  LABEL-SA " + c.
       END.
 
-      IF NOT l AND DICTDB._Field._Col-label = ? THEN .
+      IF NOT lAvl AND DICTDB._Field._Col-label = ? THEN .
       ELSE DO:
           RUN dctquot IN h_dmputil (DICTDB._Field._Col-label,'"',OUTPUT c).
-          IF NOT l OR COMPARE(DICTDB._Field._Col-label,"NE",DICTDB2._Field._Col-label,"RAW") THEN
+          IF NOT lAvl OR COMPARE(DICTDB._Field._Col-label,"NE",DICTDB2._Field._Col-label,"RAW") THEN
             ddl[12] = "  COLUMN-LABEL " + c.
       END.
 
-      IF NOT l AND (DICTDB._Field._Col-label-SA = ? OR DICTDB._Field._Col-label-SA = '' ) THEN .
+      IF NOT lAvl AND (DICTDB._Field._Col-label-SA = ? OR DICTDB._Field._Col-label-SA = '' ) THEN .
       ELSE DO:
           RUN dctquot IN h_dmputil (DICTDB._Field._Col-label-SA,'"',OUTPUT c).
-          IF NOT l OR 
+          IF NOT lAvl OR 
                   /* ignore this field if they are a combination of ? and empty strings */
                   (CHECK_SA_FIELDS(DICTDB._Field._Col-label-SA,DICTDB2._Field._Col-label-SA) AND 
                    COMPARE(DICTDB._Field._Col-label-SA,"NE",DICTDB2._Field._Col-label-SA,"RAW")) THEN
@@ -1574,82 +1703,82 @@ DO ON STOP UNDO, LEAVE
       END.
 
       /* don't write default value for new field */
-      IF NOT l AND DICTDB._Field._Can-Read = '*' THEN .
+      IF NOT lAvl AND DICTDB._Field._Can-Read = '*' THEN .
       ELSE DO:
           RUN dctquot IN h_dmputil (DICTDB._Field._Can-Read,'"',OUTPUT c).
-          IF NOT l OR COMPARE(DICTDB._Field._Can-read,"NE",DICTDB2._Field._Can-read,"RAW") THEN
+          IF NOT lAvl OR COMPARE(DICTDB._Field._Can-read,"NE",DICTDB2._Field._Can-read,"RAW") THEN
             ddl[14] = "  CAN-READ " + c.
       END.
 
       /* don't write default value for new field */
-      IF NOT l AND DICTDB._Field._Can-Write = '*' THEN .
+      IF NOT lAvl AND DICTDB._Field._Can-Write = '*' THEN .
       ELSE DO:
           RUN dctquot IN h_dmputil (DICTDB._Field._Can-Write,'"',OUTPUT c).
-          IF NOT l OR COMPARE(DICTDB._Field._Can-write,"NE",DICTDB2._Field._Can-write,"RAW") THEN
+          IF NOT lAvl OR COMPARE(DICTDB._Field._Can-write,"NE",DICTDB2._Field._Can-write,"RAW") THEN
             ddl[15] = "  CAN-WRITE " + c.
       END.
 
-      IF NOT l AND (DICTDB._Field._Valexp = ? OR DICTDB._Field._Valexp = '' ) THEN .
+      IF NOT lAvl AND (DICTDB._Field._Valexp = ? OR DICTDB._Field._Valexp = '' ) THEN .
       ELSE DO:
           RUN dctquot IN h_dmputil (DICTDB._Field._Valexp,'"',OUTPUT c).
-          IF NOT l OR COMPARE(DICTDB._Field._Valexp,"NE",DICTDB2._Field._Valexp,"RAW") THEN
+          IF NOT lAvl OR COMPARE(DICTDB._Field._Valexp,"NE",DICTDB2._Field._Valexp,"RAW") THEN
             ddl[16] = "  VALEXP " + c.
       END.
 
-      IF NOT l AND (DICTDB._Field._Valmsg = ? OR DICTDB._Field._Valmsg = '' ) THEN .
+      IF NOT lAvl AND (DICTDB._Field._Valmsg = ? OR DICTDB._Field._Valmsg = '' ) THEN .
       ELSE DO:
           RUN dctquot IN h_dmputil (DICTDB._Field._Valmsg,'"',OUTPUT c).
-          IF NOT l OR DICTDB._Field._Valmsg <> DICTDB2._Field._Valmsg THEN
+          IF NOT lAvl OR DICTDB._Field._Valmsg <> DICTDB2._Field._Valmsg THEN
             ddl[17] = "  VALMSG " + c.
       END.
 
-      IF NOT l AND (DICTDB._Field._Valmsg-SA = ? OR DICTDB._Field._Valmsg-SA = '' ) THEN .
+      IF NOT lAvl AND (DICTDB._Field._Valmsg-SA = ? OR DICTDB._Field._Valmsg-SA = '' ) THEN .
       ELSE DO:
           RUN dctquot IN h_dmputil (DICTDB._Field._Valmsg-SA,'"',OUTPUT c).
-          IF NOT l OR COMPARE(DICTDB._Field._Valmsg-SA,"NE",DICTDB2._Field._Valmsg-SA,"RAW") THEN
+          IF NOT lAvl OR COMPARE(DICTDB._Field._Valmsg-SA,"NE",DICTDB2._Field._Valmsg-SA,"RAW") THEN
             ddl[18] = "  VALMSG-SA " + c.
       END.
 
-      IF NOT l AND DICTDB._Field._View-as = ? THEN .
+      IF NOT lAvl AND DICTDB._Field._View-as = ? THEN .
       ELSE DO:
           RUN dctquot IN h_dmputil (DICTDB._Field._View-as,'"',OUTPUT c).
-          IF NOT l OR COMPARE(DICTDB._Field._View-as,"NE",DICTDB2._Field._View-as,"RAW") THEN
+          IF NOT lAvl OR COMPARE(DICTDB._Field._View-as,"NE",DICTDB2._Field._View-as,"RAW") THEN
             ddl[19] = "  VIEW-AS " + c.
       END.
 
-      IF NOT l AND DICTDB._Field._Extent = 0 THEN .
+      IF NOT lAvl AND DICTDB._Field._Extent = 0 THEN .
       ELSE DO:
-          IF NOT l OR DICTDB._Field._Extent <> DICTDB2._Field._Extent THEN
+          IF NOT lAvl OR DICTDB._Field._Extent <> DICTDB2._Field._Extent THEN
             ddl[20] = "  EXTENT " + STRING(DICTDB._Field._Extent).
       END.
 
-      IF NOT l AND DICTDB._Field._Decimals = ? THEN .
+      IF NOT lAvl AND DICTDB._Field._Decimals = ? THEN .
       ELSE DO:
-          IF NOT l OR DICTDB._Field._Decimals <> DICTDB2._Field._Decimals THEN
+          IF NOT lAvl OR DICTDB._Field._Decimals <> DICTDB2._Field._Decimals THEN
             ddl[21] = "  DECIMALS " + (IF DICTDB._Field._Decimals = ? THEN "?"
                         ELSE STRING(DICTDB._Field._Decimals)).
       END.
 
-      IF NOT l OR DICTDB._Field._Order <> DICTDB2._Field._Order THEN
+      IF NOT lAvl OR DICTDB._Field._Order <> DICTDB2._Field._Order THEN
         ddl[22] = "  ORDER " + STRING(DICTDB._Field._Order).
 
-      IF NOT l AND NOT DICTDB._Field._Mandatory THEN .
-      ELSE IF NOT l OR DICTDB._Field._Mandatory <> DICTDB2._Field._Mandatory THEN
+      IF NOT lAvl AND NOT DICTDB._Field._Mandatory THEN .
+      ELSE IF NOT lAvl OR DICTDB._Field._Mandatory <> DICTDB2._Field._Mandatory THEN
         ddl[23] = (IF DICTDB._Field._Mandatory
                     THEN "  MANDATORY" ELSE "  NULL-ALLOWED").
 
-      IF NOT l AND NOT DICTDB._Field._Fld-case THEN .
-      ELSE IF NOT l OR DICTDB._Field._Fld-case <> DICTDB2._Field._Fld-case THEN
+      IF NOT lAvl AND NOT DICTDB._Field._Fld-case THEN .
+      ELSE IF NOT lAvl OR DICTDB._Field._Fld-case <> DICTDB2._Field._Fld-case THEN
         ddl[24] = (IF DICTDB._Field._Fld-case
                     THEN "  CASE-SENSITIVE" ELSE "  NOT-CASE-SENSITIVE").
 
-      IF NOT l AND CAN-DO("BLOB,CLOB",DICTDB._Field._Data-type) THEN DO:
+      IF NOT lAvl AND CAN-DO("BLOB,CLOB",DICTDB._Field._Data-type) THEN DO:
         FIND DICTDB._storageobject WHERE DICTDB._Storageobject._Db-recid = RECID(DICTDB._Db)
                                 AND DICTDB._Storageobject._Object-type = 3
                                 AND DICTDB._Storageobject._Object-number = DICTDB._Field._Fld-stlen
                                 and DICTDB._Storageobject._Partitionid   = 0                
-                              NO-LOCK.
-        FIND DICTDB._Area WHERE DICTDB._Area._Area-number = DICTDB._StorageObject._Area-number NO-LOCK .
+                              NO-LOCK.        
+        FIND DICTDB._Area WHERE DICTDB._Area._Area-number = DICTDB._StorageObject._Area-number NO-LOCK NO-ERROR.
         
         ASSIGN ddl[25] = "  LOB-AREA " + IF AVAIL DICTDB._Area THEN QUOTER(DICTDB._Area._Area-name) ELSE ''
                ddl[26] = "  LOB-BYTES "+ STRING(DICTDB._Field._Width)
@@ -1661,7 +1790,7 @@ DO ON STOP UNDO, LEAVE
                  ddl[30] = "  CLOB-TYPE "      + STRING(DICTDB._Field._Attributes1).
       END.
       /* Changing blob/clob field */
-      ELSE IF l AND CAN-DO("BLOB,CLOB",DICTDB._Field._Data-type) THEN DO:
+      ELSE IF lAvl AND CAN-DO("BLOB,CLOB",DICTDB._Field._Data-type) THEN DO:
         IF DICTDB._Field._Width <> DICTDB2._Field._Width THEN
             ddl[25] = "  LOB-BYTES " + STRING(DICTDB._Field._Width).
         IF DICTDB._Field._Fld-Misc2[1] <> DICTDB2._Field._Fld-Misc2[1] THEN
@@ -1691,7 +1820,7 @@ DO ON STOP UNDO, LEAVE
                                 and DICTDB2._Storageobject._Partitionid   = 0                
                                 NO-LOCK.
         IF DICTDB._StorageObject._Area-number <> DICTDB2._StorageObject._Area-number THEN DO:
-          OUTPUT STREAM err-log TO {&errFileName} APPEND NO-ECHO.
+          OUTPUT STREAM err-log TO VALUE(errFileName) APPEND NO-ECHO.
    
           PUT STREAM err-log UNFORMATTED "Warning: Blob Field " +
                  '"' + DICTDB._Field._Field-name + '"' + new_lang[11] + 
@@ -1704,7 +1833,7 @@ DO ON STOP UNDO, LEAVE
           ASSIGN s_errorsLogged = TRUE.
         END.        
       END.
-      ELSE IF NOT l OR DICTDB._Field._Width <> DICTDB2._Field._Width THEN
+      ELSE IF NOT lAvl OR DICTDB._Field._Width <> DICTDB2._Field._Width THEN
         ddl[25] = "  MAX-WIDTH " + STRING(DICTDB._Field._Width).
 
       /* let's cache the encryption info and/or object attributes in temp-tables 
@@ -1728,7 +1857,7 @@ DO ON STOP UNDO, LEAVE
          /* if field is available, do this too. Note that the object name is from the DICTDB db,
             even though we are reading DICTDB2, because the field may have been renamed.
          */
-         IF l AND (VALID-OBJECT(myEPolicy[2]) OR VALID-OBJECT(myObjAttrs[2])) THEN DO:
+         IF lAvl AND (VALID-OBJECT(myEPolicy[2]) OR VALID-OBJECT(myObjAttrs[2])) THEN DO:
          
              /* need to save away old and new name for field if different, so we find the
                 right object when comparing the encryption policies.
@@ -1758,7 +1887,7 @@ DO ON STOP UNDO, LEAVE
       /* deal with field triggers */
       /* 1st, find ones to be deleted if field is being updated */
       j = 31.
-      IF l THEN
+      IF lAvl THEN
         FOR EACH DICTDB2._Field-trig OF DICTDB2._Field:
           FIND DICTDB._Field-trig OF DICTDB._Field
             WHERE DICTDB._Field-trig._Event = DICTDB2._Field-trig._Event 
@@ -1790,20 +1919,78 @@ DO ON STOP UNDO, LEAVE
                     THEN "?" ELSE STRING(DICTDB._Field-trig._Trig-CRC))
                  + """".
       END. 
-  
-      /* don't write out header or anything unless there's values to output */
-      l = FALSE.
-      DO i = 2 TO j WHILE NOT l:
-        l = ddl[i] <> "".
-      END.
-      IF l THEN DO i = 1 TO j:
-        /* if ddl[i] = "" this doesn't do anything */
-        PUT STREAM ddl UNFORMATTED ddl[i] SKIP.  
-      END.
-      ELSE IF to-int64 AND ddl[1] <> "" THEN /* write the type change from int to int64 */
-          PUT STREAM ddl UNFORMATTED ddl[1] SKIP(1).  
+      ASSIGN hDumpToStream = hPreDeployStream.
 
-      IF l THEN PUT STREAM ddl UNFORMATTED SKIP(1).
+     /* don't write out header or anything unless there's values to output */
+      ASSIGN lAvl           = FALSE
+             lAvalOffline   = FALSE 
+             lAvalPreDeploy = FALSE
+             lAvalTrigger   = FALSE.
+
+      DO i = 2 TO j:
+        lAvl = ddl[i] <> "".
+
+        IF lAvl THEN DO:
+            IF user_env[43] NE "Yes" OR ddl[1] BEGINS "ADD" THEN DO:
+                ASSIGN lAvalPreDeploy = TRUE.
+                LEAVE.
+            END.
+            /* This is UPDATE FIELD and writing to different sections */
+            IF i = 5 or i = 6 or i =7 or (i >= 20 AND i <= 30) THEN
+                ASSIGN lAvalOffline = TRUE.
+            ELSE IF i = 32 THEN DO:
+                ASSIGN lAvalTrigger = TRUE.
+                LEAVE. /* Once we hit a trigger definition, we are done */
+            END.
+            ELSE IF NOT lAvalPreDeploy THEN
+              ASSIGN lAvalPreDeploy = TRUE.
+        END.
+      END.
+      IF lAvalPreDeploy  OR lAvalTrigger  OR lAvalOffline THEN
+        ASSIGN lAvl = TRUE.
+
+      IF lAvalPreDeploy OR (to-int64 AND ddl[1] <> "") THEN DO:
+         PUT STREAM-HANDLE hDumpToStream UNFORMATTED ddl[1] SKIP.
+        /* If we written data type change here, then the next ones, if any, 
+           should not have that so remove it */
+         IF to-int64 AND (lAvalTrigger OR lAvalOffline) THEN DO:
+            ASSIGN ENTRY(6, ddl[1], " ") = ""
+                   ENTRY(7, ddl[1], " ") = "".
+         END.
+      END.
+
+      /* If UPDATE has TRIGGERS/OFFLINE operations then dump ddl[1] to Trigger/Offline stream */
+      IF lAvalTrigger  THEN
+         PUT STREAM-HANDLE hTriggersStream UNFORMATTED ddl[1] SKIP.
+   
+      IF lAvalOffline THEN
+         PUT STREAM-HANDLE hOfflineStream UNFORMATTED ddl[1] SKIP.
+
+      IF lAvl THEN DO i = 2 TO j:
+        /* if ddl[i] = "" this doesn't do anything */
+         IF ddl[1] BEGINS "ADD" OR user_env[43] NE "Yes" THEN
+            PUT STREAM-HANDLE hDumpToStream UNFORMATTED ddl[i] SKIP.
+
+         ELSE IF ddl[i] NE "" THEN DO:
+            IF i >= 32 THEN DO:
+               ASSIGN hDumpToStream = hTriggersStream.
+               PUT STREAM-HANDLE hDumpToStream UNFORMATTED ddl[i] SKIP.
+            END.
+            ELSE IF i = 5 OR i = 6 OR  i = 7 OR  (i >= 20 AND i <= 30) THEN
+               PUT STREAM-HANDLE hOfflineStream UNFORMATTED ddl[i] SKIP.
+            ELSE
+               PUT STREAM-HANDLE hDumpToStream UNFORMATTED ddl[i] SKIP.
+         END.            
+      END.
+
+      IF lAvl THEN DO:
+          IF lAvalPreDeploy OR (to-int64 AND ddl[1] <> "") THEN
+             PUT STREAM-HANDLE hPreDeployStream UNFORMATTED SKIP(1).
+          IF lAvalTrigger  THEN
+             PUT STREAM-HANDLE hTriggersStream UNFORMATTED SKIP(1).   
+          IF lAvalOffline THEN
+             PUT STREAM-HANDLE hOfflineStream UNFORMATTED SKIP(1).
+      END.
     END.         /* end FOR EACH field-list */  
   
     /* note that there is no user interface for resolving renamed
@@ -1820,7 +2007,7 @@ DO ON STOP UNDO, LEAVE
        FIND FIRST DICTDB2._Index WHERE RECID(DICTDB2._Index) = indxRecid NO-LOCK NO-ERROR.
        IF AVAIL(DICTDB2._Index) THEN
        DO:
-           PUT STREAM ddl UNFORMATTED "ADD "
+           PUT STREAM-HANDLE hOfflineStream UNFORMATTED "ADD "
            'INDEX "' DICTDB2._Index._Index-Name
            '" ON "' DICTDB2._File._File-name '"' SKIP. 
            FIND FIRST DICTDB2._StorageObject where DICTDB2._StorageObject._Db-recid  = DICTDB2._File._Db-recid
@@ -1832,38 +2019,38 @@ DO ON STOP UNDO, LEAVE
            ELSE
              FIND DICTDB2._Area WHERE DICTDB2._Area._Area-number = DICTDB2._Index._idx-num NO-LOCK .
 
-           PUT STREAM ddl UNFORMATTED
+           PUT STREAM-HANDLE hOfflineStream UNFORMATTED
              "  AREA " '"' IF AVAIL DICTDB2._Area THEN DICTDB2._Area._Area-name ELSE '' '"' SKIP.
            
            IF DICTDB2._Index._Unique THEN 
            DO:     
-             PUT STREAM ddl UNFORMATTED "  UNIQUE" SKIP.
+             PUT STREAM-HANDLE hOfflineStream UNFORMATTED "  UNIQUE" SKIP.
              IF NOT DICTDB2._Index._Active THEN
-             PUT STREAM ddl UNFORMATTED "  INACTIVE" SKIP.
+             PUT STREAM-HANDLE hOfflineStream UNFORMATTED "  INACTIVE" SKIP.
            END.
            ELSE IF NOT DICTDB2._Index._Active AND NOT DICTDB2._Index._Unique THEN
-           PUT STREAM ddl UNFORMATTED "  INACTIVE" SKIP.
+           PUT STREAM-HANDLE hOfflineStream UNFORMATTED "  INACTIVE" SKIP.
            
            IF DICTDB2._Index._Wordidx = 1 THEN 
-             PUT STREAM ddl UNFORMATTED "  WORD" SKIP.
+             PUT STREAM-HANDLE hOfflineStream UNFORMATTED "  WORD" SKIP.
              
            IF DICTDB2._Index._Desc <> ? AND DICTDB2._Index._Desc <> '' THEN 
            DO:
-              PUT STREAM ddl CONTROL "  DESCRIPTION ".
-              EXPORT STREAM ddl DICTDB2._Index._Desc SKIP.
+              PUT STREAM-HANDLE hOfflineStream CONTROL "  DESCRIPTION ".
+              EXPORT STREAM-HANDLE hOfflineStream DICTDB2._Index._Desc SKIP.
            END.
            
            FOR EACH DICTDB2._Index-field OF _Index,DICTDB2._Field OF _Index-field
            BREAK BY DICTDB2._Index-field._Index-seq:
-             PUT STREAM ddl UNFORMATTED
+             PUT STREAM-HANDLE hOfflineStream UNFORMATTED
                '  INDEX-FIELD "' DICTDB2._Field._Field-Name '" '
                TRIM(STRING(DICTDB2._Index-field._Ascending,"A/DE")) "SCENDING"
               (IF DICTDB2._Index-field._Abbreviate THEN " ABBREVIATED" ELSE "")
               (IF DICTDB2._Index-field._Unsorted   THEN " UNSORTED"    ELSE "") SKIP.
            END.
-           PUT STREAM ddl UNFORMATTED SKIP(1).
+           PUT STREAM-HANDLE hOfflineStream UNFORMATTED SKIP(1).
            IF DICTDB2._File._Prime-Index = RECID(DICTDB2._Index) THEN
-             PUT STREAM ddl UNFORMATTED
+             PUT STREAM-HANDLE hOfflineStream UNFORMATTED
                'UPDATE PRIMARY INDEX "' DICTDB2._Index._Index-name
                '" ON "' DICTDB2._File._File-name '"' SKIP(1).
         END.       
@@ -2006,7 +2193,7 @@ DO ON STOP UNDO, LEAVE
                                 INPUT RECID(DICTDB2._DB)) THEN DO:
             ASSIGN s_errorsLogged = TRUE.
                 
-            OUTPUT STREAM err-log TO {&errFileName} APPEND NO-ECHO.
+            OUTPUT STREAM err-log TO VALUE(errFileName) APPEND NO-ECHO.
                 
             PUT STREAM err-log UNFORMATTED new_lang[10] +
                      '"' + DICTDB._Index._Index-name + '"' + new_lang[11] + 
@@ -2087,20 +2274,20 @@ DO ON STOP UNDO, LEAVE
       IF NOT p-batchmode and not p-silentincrd THEN  /* 02/01/29 vap (IZ# 1525) */
         DISPLAY DICTDB._Index._Index-name @ idx2 WITH FRAME seeking.
       IF NOT DICTDB._Index._Active AND DICTDB2._Index._Active THEN DO:
-        PUT STREAM ddl UNFORMATTED
+        PUT STREAM-HANDLE hOfflineStream UNFORMATTED
           'UPDATE INACTIVE INDEX "' DICTDB._Index._Index-name
           '" OF "' DICTDB._File._File-name '"' SKIP.
         IF DICTDB._Index._Desc <> DICTDB2._Index._Desc THEN DO:
-          PUT STREAM ddl CONTROL "  DESCRIPTION ".
-          EXPORT STREAM ddl DICTDB._Index._Desc SKIP(1).         
+          PUT STREAM-HANDLE hOfflineStream CONTROL "  DESCRIPTION ".
+          EXPORT STREAM-HANDLE hOfflineStream DICTDB._Index._Desc SKIP(1).         
         END.
       END.
       ELSE IF DICTDB._Index._Desc <> DICTDB2._Index._Desc THEN DO:
-        PUT STREAM ddl UNFORMATTED
+        PUT STREAM-HANDLE hOfflineStream UNFORMATTED
           'UPDATE INDEX "' DICTDB._Index._Index-name
                '" OF "' DICTDB._File._File-name '"' SKIP.
-        PUT STREAM ddl CONTROL "  DESCRIPTION ".
-        EXPORT STREAM ddl DICTDB._Index._Desc SKIP(1).        
+        PUT STREAM-HANDLE hOfflineStream CONTROL "  DESCRIPTION ".
+        EXPORT STREAM-HANDLE hOfflineStream DICTDB._Index._Desc SKIP(1).        
       END. 
       DELETE index-list.
     END.
@@ -2118,29 +2305,30 @@ DO ON STOP UNDO, LEAVE
         DISPLAY index-list.i1-name @ idx2 WITH FRAME seeking.
       RUN Check_Index_Conflict IN h_dmputil (INPUT index-list.i1-name,
           INPUT DICTDB._File._File-name).     
-      PUT STREAM ddl UNFORMATTED
+      PUT STREAM-HANDLE hOfflineStream UNFORMATTED
         'RENAME INDEX "' index-list.i2-name
         '" TO "' index-list.i1-name
         '" ON "' DICTDB._File._File-name '"' SKIP(1).
       IF NOT DICTDB._Index._Active AND DICTDB2._Index._Active THEN DO:
-        PUT STREAM ddl UNFORMATTED
+        PUT STREAM-HANDLE hOfflineStream UNFORMATTED
           'UPDATE INACTIVE INDEX "' DICTDB._Index._Index-name
           '" OF "' DICTDB._File._File-name '"' SKIP.
         IF DICTDB._Index._Desc <> DICTDB2._Index._Desc THEN DO:
-          PUT STREAM ddl CONTROL "  DESCRIPTION ".
-          EXPORT STREAM ddl DICTDB._Index._Desc SKIP(1).
+          PUT STREAM-HANDLE hOfflineStream CONTROL "  DESCRIPTION ".
+          EXPORT STREAM-HANDLE hOfflineStream DICTDB._Index._Desc SKIP(1).
         END.
       END.
       ELSE IF DICTDB._Index._Desc <> DICTDB2._Index._Desc THEN DO:
-        PUT STREAM ddl UNFORMATTED
+        PUT STREAM-HANDLE hOfflineStream UNFORMATTED
           'UPDATE INDEX "' DICTDB._Index._Index-name
                '" OF "' DICTDB._File._File-name '"' SKIP.
-        PUT STREAM ddl CONTROL "  DESCRIPTION ".
-        EXPORT STREAM ddl DICTDB._Index._Desc SKIP(1).
+        PUT STREAM-HANDLE hOfflineStream CONTROL "  DESCRIPTION ".
+        EXPORT STREAM-HANDLE hOfflineStream DICTDB._Index._Desc SKIP(1).
       END. 
       DELETE index-list.
     END.
-    IF ans THEN PUT STREAM ddl UNFORMATTED SKIP(1).
+    IF ans THEN 
+      PUT STREAM-HANDLE hOfflineStream UNFORMATTED SKIP(1).
   
     /* check if unique indexes to be created as inactive */
     FOR EACH index-list WHERE index-list.i1-i2,
@@ -2157,7 +2345,7 @@ DO ON STOP UNDO, LEAVE
 
       IF iact THEN DO:
         ASSIGN s_errorsLogged = TRUE.         
-        OUTPUT STREAM err-log TO {&errFileName} APPEND NO-ECHO.
+        OUTPUT STREAM err-log TO VALUE(errFileName) APPEND NO-ECHO.
          
         PUT STREAM err-log UNFORMATTED
              new_lang[18]                                  SKIP
@@ -2186,8 +2374,13 @@ DO ON STOP UNDO, LEAVE
          DICTDB._File._File-Name = drop-list.file-name NO-ERROR.
       IF NOT AVAIL drop-list THEN      
         RUN Check_Index_Conflict IN h_dmputil (INPUT index-list.i1-name,
-          INPUT DICTDB._File._File-name).      
-      PUT STREAM ddl UNFORMATTED "ADD "
+          INPUT DICTDB._File._File-name).
+      IF DICTDB._Index._Active THEN
+        ASSIGN hDumpToStream = hOfflineStream.
+      ELSE
+        ASSIGN hDumpToStream = hPreDeployStream.
+      
+      PUT STREAM-HANDLE hDumpToStream UNFORMATTED "ADD "
         'INDEX "' DICTDB._Index._Index-Name
         '" ON "' DICTDB._File._File-name '"' SKIP.
       /* first - could have collation */
@@ -2209,7 +2402,7 @@ DO ON STOP UNDO, LEAVE
               DICTDB2._Area._Area-name = DICTDB._Area._Area-name no-error.
       IF NOT AVAIL DICTDB2._Area THEN DO:
         ASSIGN s_errorsLogged = TRUE.        
-        OUTPUT STREAM err-log TO {&errFileName} APPEND NO-ECHO.
+        OUTPUT STREAM err-log TO VALUE(errFileName) APPEND NO-ECHO.
          
         PUT STREAM err-log UNFORMATTED new_lang[3] +
              '"' + IF AVAIL DICTDB._Area THEN DICTDB._Area._Area-name ELSE '' + '"' + new_lang[21]     SKIP
@@ -2222,38 +2415,37 @@ DO ON STOP UNDO, LEAVE
         OUTPUT STREAM err-log CLOSE.
       END.      
       IF AVAIL DICTDB._Area THEN   
-      PUT STREAM ddl UNFORMATTED
+      PUT STREAM-HANDLE hDumpToStream UNFORMATTED
          "  AREA " '"' DICTDB._Area._Area-name '"' SKIP.
 
       IF DICTDB._Index._Unique THEN DO:        
-        PUT STREAM ddl UNFORMATTED "  UNIQUE" SKIP.
+        PUT STREAM-HANDLE hDumpToStream UNFORMATTED "  UNIQUE" SKIP.
         
-        IF OS-GETENV ("DUMP_INC_INDEXMODE") NE ? AND OS-GETENV ("DUMP_INC_INDEXMODE") NE '""' THEN DO:            
-            IF OS-GETENV ("DUMP_INC_INDEXMODE") EQ "inactive" THEN                
-                PUT STREAM ddl UNFORMATTED "  INACTIVE" SKIP.            
+        IF cIndexMode NE ? AND cIndexMode NE '""' AND cIndexMode NE "" THEN DO:            
+            IF cIndexMode EQ "inactive" THEN                
+                PUT STREAM-HANDLE hDumpToStream UNFORMATTED "  INACTIVE" SKIP.
         END.
         ELSE IF NOT (DICTDB._Index._Active AND (IF iact = ? THEN TRUE ELSE iact)) THEN DO:  
-            PUT STREAM ddl UNFORMATTED "  INACTIVE" SKIP.
+            PUT STREAM-HANDLE hDumpToStream UNFORMATTED "  INACTIVE" SKIP.
         END.
       END. 
-      ELSE IF OS-GETENV ("DUMP_INC_INDEXMODE") NE ? AND OS-GETENV ("DUMP_INC_INDEXMODE") NE '""' THEN DO:              
-          IF OS-GETENV ("DUMP_INC_INDEXMODE") EQ "inactive" THEN              
-              PUT STREAM ddl UNFORMATTED "  INACTIVE" SKIP.
+      ELSE IF cIndexMode NE ? AND cIndexMode NE '""' AND cIndexMode NE "" THEN DO:              
+          IF cIndexMode EQ "inactive" THEN              
+              PUT STREAM-HANDLE hDumpToStream UNFORMATTED "  INACTIVE" SKIP.
       END.
       ELSE IF NOT DICTDB._Index._Active AND NOT DICTDB._Index._Unique THEN DO:
-          PUT STREAM ddl UNFORMATTED "  INACTIVE" SKIP.
+          PUT STREAM-HANDLE hDumpToStream UNFORMATTED "  INACTIVE" SKIP.
       END.
       
-      
       IF DICTDB._Index._Wordidx = 1 THEN 
-        PUT STREAM ddl UNFORMATTED "  WORD" SKIP.
+        PUT STREAM-HANDLE hDumpToStream UNFORMATTED "  WORD" SKIP.
       IF DICTDB._Index._Desc <> ? AND DICTDB._Index._Desc <> '' THEN DO:
-        PUT STREAM ddl CONTROL "  DESCRIPTION ".
-        EXPORT STREAM ddl DICTDB._Index._Desc SKIP.
+        PUT STREAM-HANDLE hDumpToStream CONTROL "  DESCRIPTION ".
+        EXPORT STREAM-HANDLE hDumpToStream DICTDB._Index._Desc SKIP.
       END.
       FOR EACH DICTDB._Index-field OF _Index,DICTDB._Field OF _Index-field
         BREAK BY DICTDB._Index-field._Index-seq:
-        PUT STREAM ddl UNFORMATTED
+        PUT STREAM-HANDLE hDumpToStream UNFORMATTED
           '  INDEX-FIELD "' DICTDB._Field._Field-Name '" '
           TRIM(STRING(DICTDB._Index-field._Ascending,"A/DE")) "SCENDING"
           (IF DICTDB._Index-field._Abbreviate THEN " ABBREVIATED" ELSE "")
@@ -2265,7 +2457,7 @@ DO ON STOP UNDO, LEAVE
       do:  
          if not DICTDB._Index._index-attributes[1] and DICTDB2._Index._index-attributes[1] then
          do: 
-            OUTPUT STREAM err-log TO {&errFileName} APPEND NO-ECHO.  
+            OUTPUT STREAM err-log TO VALUE(errFileName) APPEND NO-ECHO.  
             PUT STREAM err-log UNFORMATTED new_lang[3] +
                         '"' + DICTDB._Index._Index-name + '"' + new_lang[53]     SKIP
                         '"' + LDBNAME("DICTDB")       + '"' + new_lang[54]     SKIP
@@ -2273,10 +2465,10 @@ DO ON STOP UNDO, LEAVE
             OUTPUT STREAM err-log CLOSE.
          end.            
          else
-          PUT STREAM ddl UNFORMATTED
+          PUT STREAM-HANDLE hDumpToStream UNFORMATTED
           ' IS-LOCAL ' if DICTDB._Index._index-attributes[1] then '"TRUE"' else '"FALSE"' .   
       end.    
-      PUT STREAM ddl UNFORMATTED SKIP(1).
+      PUT STREAM-HANDLE hDumpToStream UNFORMATTED SKIP(1).
 
       /* store encryption policy info */
       IF VALID-OBJECT(myEPolicy[1]) THEN
@@ -2299,7 +2491,7 @@ DO ON STOP UNDO, LEAVE
       FIND DICTDB._Index WHERE RECID(DICTDB._Index) = DICTDB._File._Prime-Index
         NO-ERROR.
     IF AVAILABLE DICTDB._Index AND pri1 <> pri2 THEN
-      PUT STREAM ddl UNFORMATTED
+      PUT STREAM-HANDLE hOfflineStream UNFORMATTED
         'UPDATE PRIMARY INDEX "' DICTDB._Index._Index-name
         '" ON "' DICTDB._File._File-name '"' SKIP(1).
 
@@ -2325,23 +2517,25 @@ DO ON STOP UNDO, LEAVE
         DISPLAY index-list.i1-name @ idx2 WITH FRAME seeking.
       IF index-list.i1-name <> "default" AND
           index-list.i1-name <> "sql-default" THEN
-        PUT STREAM ddl UNFORMATTED
+        PUT STREAM-HANDLE hOfflineStream UNFORMATTED
           'DROP INDEX "' index-list.i1-name
           '" ON "' DICTDB._File._File-name '"' SKIP.
       DELETE index-list.
     END.
-    IF ans THEN PUT STREAM ddl UNFORMATTED SKIP(1).
+    IF ans THEN 
+      PUT STREAM-HANDLE hOfflineStream UNFORMATTED SKIP(1).
 
     ans = FALSE.
 
     FOR EACH drop-temp-idx:
-       PUT STREAM ddl UNFORMATTED
+       PUT STREAM-HANDLE hOfflineStream UNFORMATTED
           'DROP INDEX "' temp-name
           '" ON "' Fil-name '"' SKIP.
        DELETE drop-temp-idx.
        IF NOT ans THEN ASSIGN ans =TRUE.
     END.
-    IF ans THEN PUT STREAM ddl UNFORMATTED SKIP(1).
+    IF ans THEN 
+      PUT STREAM-HANDLE hOfflineStream UNFORMATTED SKIP(1).
 
     /* handle deleted fields.  
        Do this after index deletes since fields cannot be dropped when they 
@@ -2356,13 +2550,24 @@ DO ON STOP UNDO, LEAVE
       ans = TRUE.
       IF NOT p-batchmode and not p-silentincrd THEN  /* 02/01/29 vap (IZ# 1525) */
         DISPLAY missing.name @ fld2 WITH FRAME seeking.
-      PUT STREAM ddl UNFORMATTED
-        'DROP FIELD "' missing.name
-        '" OF "' DICTDB._File._File-name '"' SKIP.
+      /* Cannot drop an LOB field online 
+         In one transaction, only one field can be dropped as online. PostDeploy will have one DROP FIELD operation  */
+      FIND FIRST DICTDB2._Field WHERE DICTDB2._Field._Field-Name = missing.name NO-LOCK NO-ERROR.
+      IF NOT (DICTDB2._Field._Data-type = "CLOB" OR DICTDB2._Field._Data-type = "BLOB")  AND NOT lDrpFldOnline
+         AND NOT inindex(INPUT RECID(DICTDB2._File), INPUT RECID(DICTDB2._Field)) THEN DO:
+          PUT STREAM-HANDLE hPostDeployStream UNFORMATTED
+            'DROP FIELD "' missing.name
+            '" OF "' DICTDB._File._File-name '"' SKIP.
+          lDrpFldOnline  = TRUE.
+          PUT STREAM-HANDLE hPostDeployStream UNFORMATTED SKIP(1).
+      END.         
+      ELSE
+        PUT STREAM-HANDLE hOfflineStream UNFORMATTED
+          'DROP FIELD "' missing.name
+          '" OF "' DICTDB._File._File-name '"' SKIP.
       DELETE missing.
     END.
-    IF ans THEN PUT STREAM ddl UNFORMATTED SKIP(1).
-  
+    IF ans THEN PUT STREAM-HANDLE hOfflineStream UNFORMATTED SKIP(1).  
   
     DO ON ERROR UNDO,LEAVE ON ENDKEY UNDO,LEAVE:
       HIDE MESSAGE.
@@ -2436,7 +2641,7 @@ DO ON STOP UNDO, LEAVE
                  df-con[5] = '  PARENT-TABLE "' + confile2._File-Name + '"'.     
                  df-con[6] = '  PARENT-INDEX "' + Index2._Index-Name + '"'.         
                END.
-	             df-con[7] = '  CONSTRAINT-ACTION "' + DICTDB._Constraint._Con-Misc2[1] + '"'.               
+                   df-con[7] = '  CONSTRAINT-ACTION "' + DICTDB._Constraint._Con-Misc2[1] + '"'.               
                IF df-con[1] <> ? THEN DO:
                DO i = 1 TO 7:
                   IF df-con[i] <> ? THEN DO:
@@ -2459,11 +2664,11 @@ DO ON STOP UNDO, LEAVE
         ELSE Constr = Constr + '  ACTIVE' + "~n" + "~n".           
       END.
       
-     PUT STREAM ddl UNFORMATTED Constr.
+     PUT STREAM-HANDLE hOfflineStream UNFORMATTED Constr.
     END.          
     /** code for drop constraints. we dont drop clustered constraint **/
     FOR EACH DICTDB2._Constraint OF DICTDB2._File  WHERE DICTDB2._constraint._con-Status <> "O" AND
-      DICTDB2._constraint._con-Status <> "D" AND DICTDB._Constraint._Con-Type <> "M": 
+      DICTDB2._constraint._con-Status <> "D" AND DICTDB2._Constraint._Con-Type <> "M": 
      Constr1 = "".
      df-con = ?.
      FIND FIRST DICTDB._Constraint OF DICTDB._File WHERE
@@ -2481,15 +2686,15 @@ DO ON STOP UNDO, LEAVE
                   df-info.df-line = df-con[1].           
        END.           
        IF Constr1 <> "" THEN 
-          PUT STREAM ddl UNFORMATTED Constr1.
+          PUT STREAM-HANDLE hOfflineStream UNFORMATTED Constr1.
     END.          
   
   END.  /* end FOR EACH potentially altered file */
 
   FOR EACH df-info:  
     IF SUBSTRING(df-line,1,1) <> " " THEN
-      PUT STREAM ddl UNFORMATTED " " SKIP.
-    PUT STREAM ddl UNFORMATTED df-line SKIP.
+      PUT STREAM-HANDLE hOfflineStream UNFORMATTED " " SKIP.
+    PUT STREAM-HANDLE hOfflineStream UNFORMATTED df-line SKIP.
   END.
     
   IF NOT p-batchmode and not p-silentincrd THEN DO: /* 02/01/29 vap (IZ# 1525) */
@@ -2579,7 +2784,7 @@ DO ON STOP UNDO, LEAVE
   ans = FALSE.
   FOR EACH missing:
     ans = TRUE.
-    PUT STREAM ddl UNFORMATTED
+    PUT STREAM-HANDLE hOfflineStream UNFORMATTED
       'DROP SEQUENCE "' missing.name '"' SKIP.
     IF NOT p-batchmode and not p-silentincrd THEN DO: /* 02/01/29 vap (IZ# 1525) */
       DISPLAY missing.name @ seq WITH FRAME seeking.
@@ -2587,7 +2792,8 @@ DO ON STOP UNDO, LEAVE
     END.
     DELETE missing.
   END.
-  IF ans THEN PUT STREAM ddl UNFORMATTED SKIP(1).
+  IF ans THEN 
+    PUT STREAM-HANDLE hOfflineStream UNFORMATTED SKIP(1).
   
   /* handle renamed sequences */
   ans = FALSE.
@@ -2595,7 +2801,7 @@ DO ON STOP UNDO, LEAVE
     WHERE seq-list.s1-name <> seq-list.s2-name
       AND seq-list.s2-name <> ?:
     ans = TRUE.
-    PUT STREAM ddl UNFORMATTED
+    PUT STREAM-HANDLE hOfflineStream UNFORMATTED
       'RENAME SEQUENCE "' seq-list.s2-name
       '" TO "' seq-list.s1-name '"' SKIP.
     IF NOT p-batchmode and not p-silentincrd THEN DO: /* 02/01/29 vap (IZ# 1525) */
@@ -2603,7 +2809,8 @@ DO ON STOP UNDO, LEAVE
       DISPLAY seq-list.s1-name @ seq2 WITH FRAME seeking.
     END.
   END.
-  IF ans THEN PUT STREAM ddl UNFORMATTED SKIP(1).
+  IF ans THEN 
+    PUT STREAM-HANDLE hOfflineStream UNFORMATTED SKIP(1).
   
   /* handle new or potentially altered sequences.  
      We can't use dumpdefs here like we do with files because it wasn't 
@@ -2624,22 +2831,27 @@ DO ON STOP UNDO, LEAVE
     IF NOT p-batchmode and not p-silentincrd THEN  /* 02/01/29 vap (IZ# 1525) */
       DISPLAY seq-list.s1-name @ seq2 WITH FRAME seeking.
   
-    /* If l is true we're updateing otherwise we're adding */
-    l = AVAILABLE DICTDB2._Sequence.
+    /* If lAvl is true we're updateing otherwise we're adding */
+    lAvl = AVAILABLE DICTDB2._Sequence.
+
+    IF lAvl THEN
+      ASSIGN hStreamToWrite = hOfflineStream.
+    ELSE
+      ASSIGN hStreamToWrite = hPreDeployStream.
   
     /* write out appropriate seq definition changes */
     ASSIGN
       j      = 1
       ddl    = ""
-      ddl[1] = (IF l THEN "UPDATE" ELSE "ADD")
+      ddl[1] = (IF lAvl THEN "UPDATE" ELSE "ADD")
                + ' SEQUENCE "' + DICTDB._Sequence._Seq-name + '"'.
       
-      IF NOT l THEN 
+      IF NOT lAvl THEN 
       DO:
          IF isDictdbMultiTenant = yes and isDictdb2MultiTenant = no THEN
          DO:
              ASSIGN s_errorsLogged = TRUE.
-             OUTPUT STREAM err-log TO {&errFileName} APPEND NO-ECHO.
+             OUTPUT STREAM err-log TO VALUE(errFileName) APPEND NO-ECHO.
                PUT STREAM err-log UNFORMATTED new_lang[3] +
                         '"' + DICTDB._Sequence._Seq-name + '"' + new_lang[48]     SKIP
                         '"' + LDBNAME("DICTDB")      + '"'    + new_lang[44]      SKIP
@@ -2657,37 +2869,37 @@ DO ON STOP UNDO, LEAVE
          IF DICTDB._Sequence._Seq-attributes[1] <> DICTDB2._Sequence._Seq-attributes[1] THEN
          DO:
              ASSIGN s_errorsLogged = TRUE.        
-             OUTPUT STREAM err-log TO {&errFileName} APPEND NO-ECHO.
+             OUTPUT STREAM err-log TO errFileName APPEND NO-ECHO.
          
              PUT STREAM err-log UNFORMATTED new_lang[3] + new_lang[51]
                  '"' + DICTDB._Sequence._Seq-name + '"' + new_lang[52] SKIP(1).
              OUTPUT STREAM err-log CLOSE.    
          END.
       END.
-      IF NOT l OR 
+      IF NOT lAvl OR 
                DICTDB._Sequence._Seq-init <> DICTDB2._Sequence._Seq-init THEN 
         ASSIGN
           j = j + 1
           ddl[j] = "  INITIAL " + (IF DICTDB._Sequence._Seq-init = ? THEN "?"
                    ELSE STRING(DICTDB._Sequence._Seq-init)).
-      IF NOT l OR 
+      IF NOT lAvl OR 
                DICTDB._Sequence._Seq-incr <> DICTDB2._Sequence._Seq-incr THEN 
         ASSIGN
           j = j + 1
           ddl[j] = "  INCREMENT " + (IF DICTDB._Sequence._Seq-incr = ? THEN "?" 
                    ELSE STRING(DICTDB._Sequence._Seq-incr)).
-      IF NOT l OR 
+      IF NOT lAvl OR 
                DICTDB._Sequence._Cycle-OK <> DICTDB2._Sequence._Cycle-OK THEN 
         ASSIGN
           j = j + 1
           ddl[j] = "  CYCLE-ON-LIMIT " + 
                    (IF DICTDB._Sequence._Cycle-OK THEN "yes" ELSE "no").
-      IF NOT l OR DICTDB._Sequence._Seq-min <> DICTDB2._Sequence._Seq-min THEN 
+      IF NOT lAvl OR DICTDB._Sequence._Seq-min <> DICTDB2._Sequence._Seq-min THEN 
         ASSIGN
           j = j + 1
           ddl[j] = "  MIN-VAL " + (IF DICTDB._Sequence._Seq-min = ? THEN "?" 
                    ELSE STRING(DICTDB._Sequence._Seq-min)).
-      IF NOT l OR DICTDB._Sequence._Seq-max <> DICTDB2._Sequence._Seq-max THEN 
+      IF NOT lAvl OR DICTDB._Sequence._Seq-max <> DICTDB2._Sequence._Seq-max THEN 
         ASSIGN
           j = j + 1
           ddl[j] = "  MAX-VAL " + (IF DICTDB._Sequence._Seq-max = ? THEN "?" 
@@ -2696,12 +2908,12 @@ DO ON STOP UNDO, LEAVE
       /* don't write out ddl[1] if j = 1 (i.e., we only have seq header) */
       IF j > 1 THEN 
         DO i = 1 TO j + 1:
-          IF ddl[i] = "" THEN  /* this puts an extra skip after the last one */
-            PUT STREAM ddl UNFORMATTED SKIP(1).
-          ELSE
-            PUT STREAM ddl UNFORMATTED ddl[i] SKIP.
+           IF ddl[i] = "" THEN  /* this puts an extra skip after the last one */
+             PUT STREAM-HANDLE hStreamToWrite UNFORMATTED SKIP(1).
+           ELSE
+             PUT STREAM-HANDLE hStreamToWrite UNFORMATTED ddl[i] SKIP.
         END.
-  
+        
   END.  /* end FOR EACH new or potentially altered sequence */
   
   /* Sync up the auto-connect records.  If there's any auto-connect records
@@ -2713,18 +2925,18 @@ DO ON STOP UNDO, LEAVE
   FOR EACH DICTDB2._Db WHERE DICTDB2._Db._Db-name <> ? AND 
                              NOT DICTDB2._Db._Db-slave AND  /* not foreign db */
                              NOT DICTDB2._Db._Db-local NO-LOCK:
-     PUT STREAM ddl UNFORMATTED 
+     PUT STREAM-HANDLE hOfflineStream UNFORMATTED 
         'DROP DATABASE "' DICTDB2._Db._Db-name '"' SKIP(1).
   END.
   FOR EACH DICTDB._Db WHERE DICTDB._Db._Db-name <> ? AND 
                             NOT DICTDB._Db._Db-slave AND  /* not foreign db */
                             NOT DICTDB._Db._Db-local NO-LOCK:
-     PUT STREAM ddl UNFORMATTED 
+     PUT STREAM-HANDLE hOfflineStream UNFORMATTED 
         'ADD DATABASE "' DICTDB._Db._Db-name '" TYPE PROGRESS' SKIP.
-     PUT STREAM ddl UNFORMATTED 'DBNAME "' DICTDB._Db._Db-addr '"' SKIP.
+     PUT STREAM-HANDLE hOfflineStream UNFORMATTED 'DBNAME "' DICTDB._Db._Db-addr '"' SKIP.
      IF DICTDB._Db._Db-comm <> "" THEN
-        PUT STREAM ddl UNFORMATTED 'PARAMS "'  DICTDB._Db._Db-comm '"' SKIP.
-     PUT STREAM ddl UNFORMATTED SKIP(1).
+        PUT STREAM-HANDLE hOfflineStream UNFORMATTED 'PARAMS "'  DICTDB._Db._Db-comm '"' SKIP.
+     PUT STREAM-HANDLE hOfflineStream UNFORMATTED SKIP(1).
   END.
 
 /*
@@ -2790,6 +3002,48 @@ OUTPUT CLOSE.
           RUN "prodict/dump/_dmpdefs.p" ("o",0, c).
       END.
   END.
+  
+  IF user_env[43] = "Yes" THEN DO:
+     PUT STREAM-HANDLE hPreDeployStream  UNFORMATTED "# END Pre_Deploy_Section"  SKIP(1).
+     PUT STREAM-HANDLE hTriggersStream   UNFORMATTED "# END Trigger_Section"     SKIP(1).
+     PUT STREAM-HANDLE hPostDeployStream UNFORMATTED "# END Post_Deploy_Section" SKIP(1).
+     PUT STREAM-HANDLE hOfflineStream    UNFORMATTED "# END Offline_Section"     SKIP(1). 
+     
+     OUTPUT STREAM pre-str   CLOSE.
+     OUTPUT STREAM trig-str  CLOSE.
+     OUTPUT STREAM post-str  CLOSE.
+     OUTPUT STREAM offln-str CLOSE. 
+  
+     
+     INPUT STREAM in-str FROM VALUE(tmpfile1).
+     REPEAT:
+        IMPORT STREAM in-str UNFORMATTED cPreDeploy.
+        IF cPreDeploy = "" THEN PUT STREAM ddl "" SKIP.
+        PUT STREAM ddl UNFORMATTED cPreDeploy SKIP.
+     END.
+     INPUT STREAM in-str CLOSE.
+     INPUT STREAM in-str FROM VALUE(tmpfile2).
+     REPEAT:
+        IMPORT STREAM in-str UNFORMATTED cTrigger.
+        IF cTrigger = "" THEN PUT STREAM ddl "" SKIP.
+        PUT STREAM ddl UNFORMATTED cTrigger SKIP.
+     END.
+     INPUT STREAM in-str CLOSE.
+     INPUT STREAM in-str FROM VALUE(tmpfile3).
+     REPEAT:
+        IMPORT STREAM in-str UNFORMATTED cPostDeploy.
+        IF cPostDeploy = "" THEN PUT STREAM ddl "" SKIP.
+        PUT STREAM ddl UNFORMATTED cPostDeploy SKIP.
+     END. 
+     INPUT STREAM in-str CLOSE.
+     INPUT STREAM in-str FROM VALUE(tmpfile4).
+     REPEAT:
+        IMPORT STREAM in-str UNFORMATTED cOffline.
+        IF cOffline = "" THEN PUT STREAM ddl "" SKIP.
+        PUT STREAM ddl UNFORMATTED cOffline SKIP.
+     END.
+     INPUT STREAM in-str CLOSE.     
+   END.
 
   {prodict/dump/dmptrail.i
     &entries      = "IF dumpPol THEN PUT STREAM ddl UNFORMATTED
@@ -2839,5 +3093,12 @@ FINALLY:
 
    IF VALID-OBJECT(myObjAttrs[2]) THEN
       DELETE OBJECT myObjAttrs[2].
+      
+   IF user_env[43] = "Yes" THEN DO:
+      OS-DELETE VALUE(tmpfile1).
+      OS-DELETE VALUE(tmpfile2).
+      OS-DELETE VALUE(tmpfile3).
+      OS-DELETE VALUE(tmpfile4).
+   END.
    
 END FINALLY.

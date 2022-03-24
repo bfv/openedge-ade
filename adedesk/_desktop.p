@@ -1,9 +1,9 @@
-/*********************************************************************
-* Copyright (C) 2000,2014 by Progress Software Corporation. All rights    *
-* reserved. Prior versions of this work may contain portions         *
-* contributed by participants of Possenet.                           *
-*                                                                    *
-*********************************************************************/
+/*******************************************************************************
+* Copyright (C) 2000,2014,2020-2021 by Progress Software Corporation. All rights    *
+* reserved. Prior versions of this work may contain portions                   *
+* contributed by participants of Possenet.                                     *
+*                                                                              *
+*******************************************************************************/
 /******************************************************************************
 *
 *   PROGRAM:  _desktop.p
@@ -18,6 +18,7 @@
 *       None
 *
 *   REVISION HISTORY:
+    05/25/21 tmasood Disable dictionary button for 32-bit
 *   08/19/01 jep   Added output parameter to _ablic.p call. ICF support. jep-icf.
 *   10/15/99 gfs   Changed "Report Designer" to "e.Report Designer"
 *   05/07/99 gfs   Added Actuate WB and RD
@@ -140,11 +141,6 @@ DEFINE BUTTON btn_rb    {&BTN_SIZE}
 DEFINE BUTTON btn_dbg   {&BTN_SIZE}
               IMAGE             FILE {&ADEICON-DIR} + "debug{&BMP-EXT}" 
               NO-FOCUS FLAT-BUTTON.
-&IF "{&WINDOW-SYSTEM}" BEGINS "MS-WIN" &THEN
-DEFINE BUTTON btn_tran  {&BTN_SIZE}
-              IMAGE             FILE {&ADEICON-DIR} + "trans{&BMP-EXT}" 
-              NO-FOCUS FLAT-BUTTON.
-&ENDIF
 DEFINE BUTTON btn_dwb   {&BTN_SIZE}
               IMAGE             FILE {&ADEICON-DIR} + "devwb{&BMP-EXT}" 
               NO-FOCUS FLAT-BUTTON.
@@ -184,9 +180,6 @@ FORM
     btn_rb   HELP "Develop professional reports."
 &ENDIF
     btn_dbg  HELP "Debug application code."
-&IF "{&WINDOW-SYSTEM}" BEGINS "MS-WIN" &THEN
-    btn_tran HELP "Translate text into other languages."
-&ENDIF
     btn_dwb  HELP "Actuate Developer Workbench"
     btn_ard  HELP "e.Report Designer"
     WITH FRAME Develop THREE-D NO-BOX USE-TEXT NO-LABELS FONT {&TEXT_FONT}.
@@ -198,7 +191,6 @@ ASSIGN btn_dict:TOOLTIP = "Data Dictionary"
        btn_rpt:TOOLTIP  = "RESULTS"
        btn_rb:TOOLTIP   = "Report Builder"
        btn_dbg:TOOLTIP  = "Application Debugger"
-       btn_tran:TOOLTIP = "Translation Manager"
        btn_dwb:TOOLTIP  = "Actuate Developer Workbench"
        btn_ard:TOOLTIP  = "e.Report Designer"
 .
@@ -222,7 +214,6 @@ DEFINE VARIABLE edit_licensed  AS LOGICAL INIT Yes.
 DEFINE VARIABLE admin_licensed AS LOGICAL INIT Yes.
 DEFINE VARIABLE uib_licensed   AS LOGICAL.
 DEFINE VARIABLE dbg_licensed   AS LOGICAL.
-DEFINE VARIABLE tran_licensed  AS LOGICAL.
 DEFINE VARIABLE comp_licensed  AS LOGICAL.
 DEFINE VARIABLE rb_licensed    AS LOGICAL.
 DEFINE VARIABLE rpt_licensed   AS LOGICAL.
@@ -244,7 +235,6 @@ assign
   edit_licensed  = ade_licensed[{&EDIT_IDX}] <> {&NOT_AVAIL}
   uib_licensed   = ade_licensed[{&UIB_IDX}] <> {&NOT_AVAIL}
   dbg_licensed   = ade_licensed[{&DBG_IDX}] <> {&NOT_AVAIL}
-  tran_licensed  = ade_licensed[{&TRAN_IDX}] <> {&NOT_AVAIL}
   comp_licensed  = ade_licensed[{&COMP_IDX}] <> {&NOT_AVAIL}
   rpt_licensed   = ade_licensed[{&RPT_IDX}] <> {&NOT_AVAIL}
   rb_licensed    = ade_licensed[{&RB_IDX}] <> {&NOT_AVAIL}
@@ -277,9 +267,6 @@ ASSIGN button_count = button_count +
                           (IF rb_licensed   THEN 1 ELSE 0) +
 &endif
                           (IF dbg_licensed  THEN 1 ELSE 0)
-&IF "{&WINDOW-SYSTEM}" BEGINS "MS-WIN" &THEN
-                       + (IF tran_licensed THEN 1 ELSE 0)
-&ENDIF
                        + (IF dwb_licensed THEN 1 ELSE 0)
                        + (IF ard_licensed THEN 1 ELSE 0)
        btn_width  = btn_edit:WIDTH-PIXELS
@@ -376,18 +363,6 @@ IF dbg_licensed THEN DO:
 END.
 ELSE
     ASSIGN btn_dbg:HIDDEN   = TRUE.
-
-&IF "{&WINDOW-SYSTEM}" BEGINS "MS-WIN" &THEN
-/* position the Tran Man - ?% present */
-IF tran_licensed THEN DO:
-    ASSIGN
-        btn_tran:X = current_x
-        btn_tran:Y = {&FRAME_VERT_MARGIN}
-        current_x = current_x + btn_spacing.
-END.
-ELSE
-    ASSIGN btn_tran:HIDDEN   = TRUE.
-&ENDIF
 
 /* position Actuate Developer Workbench - ?% present */
 IF dwb_licensed THEN DO:
@@ -505,7 +480,7 @@ DO: /* desktop.p */
         MENU-ITEM mnu_Hide:CHECKED IN MENU mnu_Pref = initial_hide_setting.
 
     ENABLE 
-        btn_dict   WHEN dict_licensed 
+        btn_dict   WHEN dict_licensed AND PROCESS-ARCHITECTURE = 64
         btn_edit   WHEN edit_licensed 
         btn_uib    WHEN uib_licensed  
         btn_rpt    WHEN rpt_licensed  
@@ -513,9 +488,6 @@ DO: /* desktop.p */
         btn_rb     WHEN rb_licensed  
 &ENDIF
         btn_dbg    WHEN dbg_licensed  
-&IF "{&WINDOW-SYSTEM}" BEGINS "MS-WIN" &THEN
-        btn_tran   WHEN tran_licensed 
-&ENDIF
         btn_dwb    WHEN dwb_licensed
         btn_ard    WHEN ard_licensed
         WITH FRAME Develop IN WINDOW Desktop_Window.
@@ -568,12 +540,6 @@ DO: /* desktop.p */
     END.
 &ENDIF
 
-&IF "{&WINDOW-SYSTEM}" BEGINS "MS-WIN" &THEN
-    IF tran_licensed AND ade_licensed[{&TRAN_IDX}] <> {&INSTALLED} THEN DO:
-	btn_tran:SENSITIVE = No.
-        tran_licensed = No.
-    END.
-&ENDIF
 
     REPEAT ON STOP UNDO, RETRY ON ERROR UNDO, RETRY ON ENDKEY UNDO, RETRY:
         /* 8/6/92 - harris
@@ -645,10 +611,6 @@ PROCEDURE disable_widgets.
             save_focus = btn_uib:HANDLE IN FRAME Develop.
         WHEN mnu_dbg_wh THEN
             save_focus = btn_dbg:HANDLE IN FRAME Develop.
-&IF "{&WINDOW-SYSTEM}" BEGINS "MS-WIN" &THEN
-        WHEN mnu_tran_wh THEN
-            save_focus = btn_tran:HANDLE IN FRAME Develop.
-&ENDIF
     END CASE.
 
     IF MENU-ITEM mnu_Hide:CHECKED IN MENU mnu_Pref = True THEN
@@ -682,7 +644,7 @@ PROCEDURE enable_widgets.
 &ENDIF
     DO:
         ENABLE 
-            btn_dict   WHEN dict_licensed 
+            btn_dict   WHEN dict_licensed AND PROCESS-ARCHITECTURE = 64
             btn_edit   WHEN edit_licensed 
             btn_uib    WHEN uib_licensed 
             btn_rpt    WHEN rpt_licensed 
@@ -690,9 +652,6 @@ PROCEDURE enable_widgets.
             btn_rb     WHEN rb_licensed 
 &ENDIF
             btn_dbg    WHEN dbg_licensed 
-&IF "{&WINDOW-SYSTEM}" BEGINS "MS-WIN" &THEN
-            btn_tran   WHEN tran_licensed 
-&ENDIF
             btn_dwb    WHEN dwb_licensed
             btn_ard    WHEN ard_licensed
             WITH FRAME Develop IN WINDOW Desktop_Window.

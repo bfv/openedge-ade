@@ -1,14 +1,14 @@
 /************************************************
 Copyright (c) 2013-2014, 2019-2021 by Progress Software Corporation. All rights reserved.
-*************************************************/  
+*************************************************/
  /*------------------------------------------------------------------------
     File        : TestProcedure
-    Purpose     : 
-    Syntax      : 
-    Description : 
+    Purpose     :
+    Syntax      :
+    Description :
     Author(s)   : svutla
     Created     : Fri Sep 20 22:47:19 IST 2013
-    Notes       : 
+    Notes       :
   ----------------------------------------------------------------------*/
 BLOCK-LEVEL ON ERROR UNDO, THROW.
 
@@ -21,7 +21,7 @@ using Progress.Lang.AppError.
 
 CLASS OpenEdge.ABLUnit.Model.TestProcedure INHERITS TestCase:
     
-    /* Constructor 
+    /* Constructor
       
        @param integer The ID of this test entity */
     CONSTRUCTOR PUBLIC TestProcedure ( INPUT id1 AS INTEGER ):
@@ -48,7 +48,7 @@ CLASS OpenEdge.ABLUnit.Model.TestProcedure INHERITS TestCase:
         if     valid-object(Entity)
            and type-of(Entity, IHandleHolder)
         then
-            assign hInstance = cast(Entity, IHandleHolder):Value. 
+            assign hInstance = cast(Entity, IHandleHolder):Value.
         
         if valid-handle(hInstance) then
         do:
@@ -62,10 +62,10 @@ CLASS OpenEdge.ABLUnit.Model.TestProcedure INHERITS TestCase:
     method override protected void InvokeTestMethod(input pMethodInfo as TestInfo):
         define variable hInstance as handle no-undo.
         
-        if     valid-object(Entity) 
+        if     valid-object(Entity)
            and type-of(Entity, IHandleHolder)
         then
-            assign hInstance = cast(Entity, IHandleHolder):Value. 
+            assign hInstance = cast(Entity, IHandleHolder):Value.
         
         if not valid-object(pMethodInfo) then
             // don't use Assert() because this state is a 'real error' not a test failure
@@ -88,6 +88,10 @@ CLASS OpenEdge.ABLUnit.Model.TestProcedure INHERITS TestCase:
             // so we know the handle is good here
             assign hInstance = cast(Entity, IHandleHolder):Value.
         end.
+        
+        if hInstance:get-signature(pMethodInfo:TestName) eq '':u then
+            // don't use Assert() because this state is a 'real error' not a test failure
+            return error new AppError(substitute('Test procedure &1 is PRIVATE', pMethodInfo:TestName), 0).
         
         // run the test
         run value(pMethodInfo:TestName) in hInstance.

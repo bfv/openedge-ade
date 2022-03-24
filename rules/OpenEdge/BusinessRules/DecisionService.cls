@@ -171,8 +171,7 @@ class OpenEdge.BusinessRules.DecisionService use-widget-pool:
         
         moSaxReader:SaxReaderCharacters:Subscribe(this-object:SaxReaderCharactersHandler).
         moSaxReader:SaxReaderStartElement:Subscribe(this-object:SaxReaderStartElementHandler).
-        moSaxReader:SaxReaderEndElement:Subscribe(this-object:SaxReaderEndElementHandler).
-                
+        moSaxReader:SaxReaderEndElement:Subscribe(this-object:SaxReaderEndElementHandler).       
     end method.
     
     /** Returns true if the current Decision Service is deployed.

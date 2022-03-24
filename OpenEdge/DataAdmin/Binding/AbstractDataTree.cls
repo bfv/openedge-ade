@@ -1,5 +1,5 @@
 /* ***********************************************************/
-/* Copyright (c) 2013-2016,2020 by Progress Software Corporation       */
+/* Copyright (c) 2013-2016,2020 by Progress Software Corporation */
 /*                                                           */
 /* All rights reserved.  No part of this program or document */
 /* may be  reproduced in  any form  or by  any means without */

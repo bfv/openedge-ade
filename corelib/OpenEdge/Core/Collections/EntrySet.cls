@@ -1,5 +1,5 @@
 /************************************************
-Copyright (c) 2013, 2017 by Progress Software Corporation. All rights reserved.
+Copyright (c) 2013, 2017, 2020-2021 by Progress Software Corporation. All rights reserved.
 *************************************************/
 /*------------------------------------------------------------------------
     File        : EntrySet
@@ -29,8 +29,22 @@ using Progress.Lang.Object.
 
 class OpenEdge.Core.Collections.EntrySet serializable inherits MapBackedCollection
             implements ISet:
-    constructor public EntrySet (poMap as IMap,phTT as handle,pcKeyField as char):
-        super (poMap,phTT,pcKeyField ).
+    
+    /* Constructor
+       
+       @param IMap The owning map
+       @param handle The underlying TT holding the data
+       @param character (optional) Query string 
+       @param character The field holding the data in the TT */
+    constructor public EntrySet(input pMap as IMap,
+                                input pTT as handle,
+                                input pQueryString as character,
+                                input pValueField as character):
+        super(pMap, pTT, pQueryString, pValueField).
+    end constructor.
+    
+    constructor public EntrySet(poMap as IMap,phTT as handle,pcKeyField as char):
+        super (poMap,phTT,pcKeyField).
     end constructor.
     
      /* Returns a new IIterator over the entryset. */
@@ -39,7 +53,9 @@ class OpenEdge.Core.Collections.EntrySet serializable inherits MapBackedCollecti
                     OwningMap,
                     this-object,
                     this-object:OwningBuffer,
-                    this-object:KeyField:name).
+                    this-object:KeyField:name,
+                    '':u,       // sort field
+                    this-object:QueryString).
     end method.
     
     /* abstract because this could be a key or value */
@@ -86,8 +102,8 @@ class OpenEdge.Core.Collections.EntrySet serializable inherits MapBackedCollecti
     /* abstract because this could be a collection of keys or values */
     method override public logical RemoveAll(poRemoveCol as ICollection):
         define variable oIterator as IIterator no-undo.
-        define variable oEntry as Object    no-undo.
-        define variable oKey as Object    no-undo.
+        define variable oEntry as Object no-undo.
+        define variable oKey as Object no-undo.
         define variable lRemoved as logical no-undo.
         
         oIterator = poRemoveCol:Iterator().
@@ -97,15 +113,17 @@ class OpenEdge.Core.Collections.EntrySet serializable inherits MapBackedCollecti
             
             oKey = OwningMap:Get(cast(oEntry, IMapEntry):Key).
             
-            if cast(oEntry, IMapEntry):Key:Equals(oKey) then
+            if cast(oEntry, IMapEntry):Key:Equals(oKey) then do:
                 OwningMap:Remove(oKey).
+                assign lRemoved = true.
+            end.
         end.            
 
         return lRemoved.        
     end method.
     
     /* abstract because this could be a collection of keys or values */
-    method override public logical RetainAll(input poRetainCollection as ICollection).
+    method override public logical RetainAll(input poRetainCollection as ICollection):
         define variable oIterator as IIterator no-undo.
         define variable oMapEntry as IMapEntry no-undo.
         define variable lAny as logical no-undo.   

@@ -1,12 +1,12 @@
 /************************************************
-Copyright (c) 2014-2017, 2019 by Progress Software Corporation. All rights reserved.
+Copyright (c) 2014-2017, 2019, 2021 by Progress Software Corporation. All rights reserved.
 *************************************************/ 
 /*------------------------------------------------------------------------
     File        : RequestBuilder
     Purpose     : Builds an HttpRequest for use with an HttpClient 
     Syntax      : 
     Description : 
-    Author(s)   : pjudge
+    Author(s)   : pjudge, dugrau
     Created     : Tue May 20 11:48:05 EDT 2014
     Notes       : * this builder performs 2 functions:
                         1/ creates a useable Request object
@@ -37,13 +37,19 @@ using OpenEdge.Net.HTTP.HttpRequest.
 using OpenEdge.Net.HTTP.HttpRequestDecorator.
 using OpenEdge.Net.HTTP.IAuthenticatedRequest.
 using OpenEdge.Net.HTTP.IHttpRequest.
+using OpenEdge.Net.HTTP.ISecureConnectionAuthenticatedRequest.
 using OpenEdge.Net.HTTP.ISupportProxy.
+using OpenEdge.Net.HTTP.ITraceableRequest.
 using OpenEdge.Net.HTTP.MethodEnum.
 using OpenEdge.Net.HTTP.ProxyHttpRequest.
 using OpenEdge.Net.HTTP.RequestBuilder.
+using OpenEdge.Net.HTTP.TlsConnectionAuthenticatedRequest.
+using OpenEdge.Net.HTTP.TraceableRequest.
 using OpenEdge.Net.HTTP.TransferEncodingEnum.
 using OpenEdge.Net.ISupportMultipartEntity.
+using OpenEdge.Net.ServerConnection.ISocketConnectionCredentialsHandler.
 using OpenEdge.Net.URI.
+using OpenEdge.Security.ICredentials.
 using Progress.Json.ObjectModel.JsonConstruct.
 using Progress.Json.ObjectModel.JsonObject.
 using Progress.Lang.Class.
@@ -103,7 +109,14 @@ class OpenEdge.Net.HTTP.RequestBuilder abstract inherits ConfigBuilder
                        get-class(ProxyHttpRequest)).
         poRegistry:Put(get-class(IAuthenticatedRequest):TypeName, 
                        get-class(AuthenticatedRequest)).
-                       
+
+        /* default for secure client connections */
+        poRegistry:Put(get-class(ISecureConnectionAuthenticatedRequest):TypeName, 
+                       get-class(TlsConnectionAuthenticatedRequest)).
+
+        /* default for traceable requests */
+        poRegistry:Put(get-class(ITraceableRequest):TypeName, 
+                       get-class(TraceableRequest)).
     end method.
     
     /** Constructor.
@@ -535,7 +548,21 @@ class OpenEdge.Net.HTTP.RequestBuilder abstract inherits ConfigBuilder
         SetHeaderOption(poHeader).
         return this-object.
     end method.
-        
+
+    /** Sets the value of the AllowTracing option.
+    
+        @param Logical Will tracing be enabled for this request? (Unknown = False)
+        @return RequestBuilder This builder instance */
+    method public RequestBuilder AllowTracing(input plTracing as logical):
+        /* Did not give an explicit "true" value, so assume "false". */
+        if plTracing eq ? then
+            assign plTracing = false.
+
+        SetOption("allowTracing":u, plTracing).
+
+        return this-object.
+    end method.
+
     /** Sets the transfer encoding for the request 
         
         @param TransferEncodingEnum The encoding to use
@@ -850,7 +877,35 @@ class OpenEdge.Net.HTTP.RequestBuilder abstract inherits ConfigBuilder
         /* Per RFC2616 the ETag value must be a quoted string */
         return AddHeader('ETag':u, quoter(pcETag)).
     end method.
-        
+
+    /** Adds a static set of credentials to the connection parameters.
+        If called more than once, option will be set with latest credentials.
+        Note: There is no UsingClientCredentials(character, character) method because this could expose the credentials to logging.
+
+        @param ICredentials  Any non-null value. Must be of type TlsClientCredentials
+        @return RequestBuilder The current builder instance */
+    method public OpenEdge.Net.HTTP.RequestBuilder UsingClientCredentials ( input pCredentials as ICredentials ):
+        Assert:NotNull(pCredentials, 'Client Credentials').
+
+        SetOption('clientCredentials':u, pCredentials).
+
+        return this-object.
+    end method.
+
+    /** Adds a callback object to the connection parameters.
+        This method may be called multiple times to add multiple callbacks.
+
+        @param ISocketConnectionCredentialsHandler Any non-null value. Must be of type TlsClientCredentials
+        @return RequestBuilder The current builder instance */
+    method public OpenEdge.Net.HTTP.RequestBuilder UsingClientCredentials ( input pCallback as ISocketConnectionCredentialsHandler ):
+        Assert:NotNull(pCallback, 'Socket Conn. Client Credentials Callback').
+
+        /* Use the handle of the object to make this option name unique (supports multiple callbacks). */
+        SetOption('clientCredentialsCallback':u + string(int64(pCallback)), pCallback).
+
+        return this-object.
+    end method.
+
     /** Decorate the request with additional behaviour
             
         @param  Class The type of decorator to use
@@ -858,7 +913,6 @@ class OpenEdge.Net.HTTP.RequestBuilder abstract inherits ConfigBuilder
         @return IHttpRequest The new, decorating request */
     method static public IHttpRequest DecorateRequest(input poDecorationType as Progress.Lang.Class,
                                                       input poDecoratedRequest as IHttpRequest):
-        define variable oDecorator as IHttpRequest no-undo.
         define variable oDecoratorType as Progress.Lang.Class no-undo.
         define variable oRequest as IHttpRequest no-undo.
         define variable oAdapter as Progress.Lang.Object no-undo.

@@ -1,9 +1,9 @@
-/*********************************************************************
-* Copyright (C) 2000,2007,2014,2020 by Progress Software Corporation. All *
-* rights reserved. Prior versions of this work may contain portions  *
-* contributed by participants of Possenet.                           *
-*                                                                    *
-*********************************************************************/
+/*************************************************************************
+* Copyright (C) 2000,2007,2014,2020 by Progress Software Corporation.    *
+* All rights reserved. Prior versions of this work may contain portions  *
+* contributed by participants of Possenet.                               *
+*                                                                        *
+**************************************************************************/
 
 /*----------------------------------------------------------------------------
 
@@ -113,7 +113,7 @@ do ON ERROR UNDO, LEAVE  ON STOP UNDO, LEAVE:
       find _File where RECID(_File) = s_TblRecId.
       _File._Prime-Index = RECID(b_Index).
    end.
-
+   
    if NOT active AND b_Index._Active AND NOT fordb AND ActRec:SENSITIVE then
    do:
       answer = yes.  /* set's yes as default button */

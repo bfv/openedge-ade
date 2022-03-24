@@ -1,7 +1,7 @@
 &Scoped-define WINDOW-NAME CURRENT-WINDOW
 &Scoped-define FRAME-NAME Dialog-Frame
 /*************************************************************/
-/* Copyright (c) 1984-2007,2011 by Progress Software Corporation  */
+/* Copyright (c) 1984-2007,2011,2020 by Progress Software Corporation  */
 /*                                                           */
 /* All rights reserved.  No part of this program or document */
 /* may be  reproduced in  any form  or by  any means without */
@@ -44,7 +44,10 @@
     rkamboj  08/16/11      Added new terminology for security items and windows.  
     rkamboj  09/14/11      Added support for allowing edit of all fields 
                            except Domain name, Tenant Name and System Type.
-    rkmaboj  05/04/2012    Fixed default domain save problem.                       
+    rkmaboj  05/04/2012    Fixed default domain save problem.    
+    moloney  01/02/2019    Changed domain access encryption to use new 
+                           SECURITY-POLICY:ENCODE-DOMAIN-ACCESS-CODE
+    tmasood  08/04/2020    Fix the domain creation when build-in domain selected    
 ------------------------------------------------------------------------*/
 /*          This .W file was created with the Progress AppBuilder.       */
 /*----------------------------------------------------------------------*/
@@ -1281,6 +1284,7 @@ procedure localFieldState:
   
   if pcMode = "CreateMode":u then 
   do with frame {&frame-name}:
+       assign inbuild = no.
        if glEnableTenant then 
           assign         
               fiTenant:sensitive = true
@@ -1511,7 +1515,7 @@ PROCEDURE localSave :
       
       IF glCreateMode OR fiAccessCode:MODIFIED THEN
         fiAccessCode:SCREEN-VALUE = 
-          AUDIT-POLICY:ENCRYPT-AUDIT-MAC-KEY(fiAccessCode:SCREEN-VALUE).
+          SECURITY-POLICY:ENCODE-DOMAIN-ACCESS-CODE(fiAccessCode:SCREEN-VALUE).
     END. /* When Before */
     WHEN "After" THEN DO:
       RUN openQuery.

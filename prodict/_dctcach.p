@@ -19,7 +19,7 @@
                               switching to the temp-table approach.
 
            rkumar    04/13/16 CDC Support- Dont display CDC Change tables in D/L
-           kberlia   04/06/21 Fixed data exceeding issue. 
+           kberlia   03/22/21 Fixed data exceeding issue. 
 */
 
 { prodict/dictvar.i }

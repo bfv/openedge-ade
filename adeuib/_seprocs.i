@@ -33,7 +33,7 @@ Modified:
    09/28/01  jep  IZ 1429 adm-create-objects is db-required. Now defaults
                   to not db-required.
    03/07/02  jep  IZ 4098 AppBuilder undoes code changes wrong.
-   02/23/21  tm   Added message to inform about size limit in section editor
+   02/05/21  tm   Added message to inform about size limit in section editor
 ----------------------------------------------------------------------------*/
 
 

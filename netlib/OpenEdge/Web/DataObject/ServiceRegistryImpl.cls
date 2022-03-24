@@ -1,5 +1,5 @@
 /* *************************************************************************************************************************
-Copyright (c) 2016-2018 by Progress Software Corporation and/or one of its subsidiaries or affiliates. All rights reserved.
+Copyright (c) 2016-2018, 2021 by Progress Software Corporation and/or one of its subsidiaries or affiliates. All rights reserved.
 ************************************************************************************************************************** */
 /*------------------------------------------------------------------------
     File        : ServiceRegistryImpl
@@ -58,7 +58,15 @@ class OpenEdge.Web.DataObject.ServiceRegistryImpl implements ISupportLogging, IS
         .
     
     // A reference to the Logger in use by an implementer
-    define public property Logger as ILogWriter no-undo get. set.
+    define public property Logger as ILogWriter no-undo
+        get():
+            if not valid-object(this-object:Logger) then
+                assign // Note that it's NOT the ServiceRegistryImpl type
+                       this-object:Logger = LoggerBuilder:GetLogger(get-class(IServiceRegistry)).
+            
+            return this-object:Logger.
+        end get.
+        set.
     
     /* Default constructor */
     constructor public ServiceRegistryImpl():
@@ -76,7 +84,8 @@ class OpenEdge.Web.DataObject.ServiceRegistryImpl implements ISupportLogging, IS
         end.
     end destructor.
     
-    /* Adds a service to this registry
+    /* Adds a service to this registry. If the service is already registered (by name/version),
+       a message is logged, and the input service is merged into the existing service instance.  
        
        @param DataObjectService  A data service object */
     method public void RegisterService(input pService as DataObjectService):
@@ -100,9 +109,15 @@ class OpenEdge.Web.DataObject.ServiceRegistryImpl implements ISupportLogging, IS
             OnServiceRegistered(new ServiceRegistryEventArgs(pService)).
             Logger:Info(substitute('Service "&1 v&2" registered', pService:Name, string(pService:Version))).
         end.
+        else
+        do:
+            Logger:Info(substitute('Service "&1 v&2" is already registered; the input will be merged into the existing instance', pService:Name, string(pService:Version))).
+            cast(lbService.Service, DataObjectService):Merge(pService).
+        end.
     end method.
     
-    /* Register a service 
+    /* Register a service. If the service is already registered, then return the registered instance. If not,
+       a new service instance will be created, regsitered and returned.
        
        @param character  (mandatory) The service name
        @param SemanticVersion  (mandatory) The service version
@@ -112,19 +127,24 @@ class OpenEdge.Web.DataObject.ServiceRegistryImpl implements ISupportLogging, IS
     method public DataObjectService RegisterService(input pServiceName  as character,
                                                     input pVersion as SemanticVersion,
                                                     input pOptions as ServiceOptions,
-                                                    input pCatalog as JsonObject).                                           
+                                                    input pCatalog as JsonObject):
         define variable svc as DataObjectService no-undo.
         
         Assert:NotNullOrEmpty(pServiceName, 'Service name').
         Assert:NotNull(pVersion, 'Service version').
         
-        assign svc         = new DataObjectService(pServiceName, pVersion)
-               /* these can both be can be unknown */
+        if HasService(pServiceName, pVersion) then
+            assign svc = GetService(pServiceName, pVersion).
+        else
+        do:
+            assign svc = new DataObjectService(pServiceName, pVersion).
+            RegisterService(svc).
+        end.
+        
+        assign /* these can both be can be unknown */
                svc:Options = pOptions
                svc:Catalog = pCatalog
                .
-        RegisterService(svc).
-        
         return svc.
     end method.
     
@@ -214,7 +234,7 @@ class OpenEdge.Web.DataObject.ServiceRegistryImpl implements ISupportLogging, IS
        @param character The service version to deregister 
        @return DataObjectService  A data service 'header' */
     method public DataObjectService GetService(input pServiceName as character,
-                                               input pVersion as character).
+                                               input pVersion as character):
         if pVersion eq '':u then
             return GetService(pServiceName).
         else
@@ -247,7 +267,7 @@ class OpenEdge.Web.DataObject.ServiceRegistryImpl implements ISupportLogging, IS
     /* Returns all registered services
        
        @return DataObjectService[] extent An array of registered services. indeterminate if none. */
-    method public DataObjectService extent GetServices().
+    method public DataObjectService extent GetServices():
         define variable services as DataObjectService extent no-undo.
         
         define buffer lbService for Service.
@@ -404,7 +424,7 @@ class OpenEdge.Web.DataObject.ServiceRegistryImpl implements ISupportLogging, IS
        @param MappedOperation The operation map for this Method/URI */
     method public void PutOperation(input pServiceName as character,
                                     input pVersion as SemanticVersion,
-                                    input pMappedOperation as MappedOperation).
+                                    input pMappedOperation as MappedOperation):
         define variable svc as DataObjectService no-undo.
         
         assign svc = GetService(pServiceName, pVersion).
@@ -420,7 +440,7 @@ class OpenEdge.Web.DataObject.ServiceRegistryImpl implements ISupportLogging, IS
        @param SemanticVersion The service version 
        @return MappedOperation[] The operations for this service */
     method public MappedOperation extent GetOperations(input pServiceName as character,
-                                                       input pVersion as SemanticVersion).
+                                                       input pVersion as SemanticVersion):
         return GetService(pServiceName, pVersion):GetOperations().
     end method.
     
@@ -444,7 +464,7 @@ class OpenEdge.Web.DataObject.ServiceRegistryImpl implements ISupportLogging, IS
        @param character An optional name for the operation 
        @return MappedOperation The operation map for this name  */
     method public MappedOperation GetOperation(input pServiceName as character,
-                                               input pOperationName as character).
+                                               input pOperationName as character):
         return GetService(pServiceName):GetOperation(pOperationName).
     end method.
     
@@ -470,7 +490,7 @@ class OpenEdge.Web.DataObject.ServiceRegistryImpl implements ISupportLogging, IS
     method public MappedOperation GetOperation(input pServiceName as character,
                                                input pVersion as SemanticVersion,
                                                input pServiceURI as character,
-                                               input pMethod as MethodEnum ).
+                                               input pMethod as MethodEnum ):
         return GetService(pServiceName, pVersion):GetOperation(pServiceURI, pMethod).
     end method.
     
@@ -666,7 +686,7 @@ class OpenEdge.Web.DataObject.ServiceRegistryImpl implements ISupportLogging, IS
         
         // find/reposition explicitly. this is so we can clear the buffer if nothing found
         if not latestVersion eq ? then 
-            find pService where rowid(pService) eq latestVersion.
+            find pService where rowid(pService) eq latestVersion no-error.
     end method.
     
     /* Helper method to find and position the Service buffer to a given service+version. Caller must check 
@@ -698,7 +718,7 @@ class OpenEdge.Web.DataObject.ServiceRegistryImpl implements ISupportLogging, IS
                  pService.Major          eq pSemVer:Major      and
                  pService.Minor          eq pSemVer:Minor      and
                  pService.Patch          eq pSemVer:Patch      and
-                 pService.PreRelease     eq pSemVer:PreRelease.
+                 pService.PreRelease     eq pSemVer:PreRelease no-error.
     end method.
     
     /* Publishes the ServiceRegistered event

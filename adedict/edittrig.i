@@ -1,5 +1,5 @@
 /***********************************************************************
-* Copyright (C) 2006,2010,2014 by Progress Software Corporation. All   *
+* Copyright (C) 2006,2010,2014,2020 by Progress Software Corporation. All   *
 * rights reserved.  Prior versions of this work may contain portions   *
 * contributed by participants of Possenet.                             *
 *                                                                      *
@@ -26,7 +26,7 @@ Date Created: 02/04/92
                              table properties.
           05/24/2005 Added GO trigger and changed choose trigger to s_btn_cancel in dbprops
           06/08/2006 fernando Added trigger for s_btn_toint64 - support for int64
-	      
+          10/29/2020 tmasood  Added default area support	      
 ----------------------------------------------------------------------------*/
 define variable AreaList as character no-undo.
 define variable lNoArea as logical no-undo.
@@ -268,7 +268,7 @@ do:
     end.
     else do:
 	     /*cannot change area of index */
-        run prodict/pro/_pro_area_list(recid(dictdb._File),{&INVALID_AREAS},s_Idx_Area:DELIMITER in frame idxprops, output cAreaList).
+        run prodict/pro/_pro_area_list(recid(dictdb._File),{&INVALID_AREAS},s_Idx_Area:DELIMITER in frame idxprops,"Index", output cAreaList).
         assign
             s_Idx_Area:list-items in frame idxprops = cAreaList
             s_Idx_Area:screen-value in frame idxprops = s_Idx_Area
@@ -986,6 +986,7 @@ on leave of b_Sequence._Seq-Name in frame newseq,
 do:
    Define var okay as logical.
    Define var name as char.
+   DEFINE VAR hBuffer AS HANDLE NO-UNDO.
 
    if s_Adding then
       display "" @ s_Status with frame newseq.  /* clear status after add */
@@ -1004,7 +1005,13 @@ do:
       eventually.  But let's check ourselves to give quicker feedback and to
       be consistent with the old dictionary.
    */
-   if can-find (dictdb._Sequence where dictdb._Sequence._Seq-Name = name) then
+   /* OCTA-21469 - Do a dynamic find on _Sequence due to different schema for index
+      between OE 11 and OE 12 */
+   //if can-find (dictdb._Sequence where dictdb._Sequence._Seq-Name = name) then
+   hBuffer = BUFFER dictdb._Sequence:HANDLE.
+   hBuffer:FIND-FIRST("where dictdb._Sequence._Seq-Name = '" + name + "'") NO-ERROR.
+
+   IF hbuffer:AVAILABLE THEN
    do:
       message "A sequence with this name already exists in this database."
       	 view-as ALERT-BOX ERROR
@@ -1114,5 +1121,6 @@ do:
       return NO-APPLY.
    end.
 end.
+
 
 

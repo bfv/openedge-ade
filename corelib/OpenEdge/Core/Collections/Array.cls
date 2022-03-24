@@ -39,6 +39,7 @@ class OpenEdge.Core.Collections.Array serializable
     define public static property DefaultArraySize as integer no-undo get. set.
     
     /* Keep incrementally growing array length as new elements are added.
+       
        This may negatively impact performance since prior to OE12 the contents of the array are copied
        to and from a temporary array. */
     define public property AutoExpand as logical no-undo get. set.

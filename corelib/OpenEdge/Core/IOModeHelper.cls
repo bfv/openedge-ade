@@ -1,5 +1,5 @@
 /* *************************************************************************************************************************
-Copyright (c) 2017 by Progress Software Corporation and/or one of its subsidiaries or affiliates. All rights reserved.
+Copyright (c) 2017, 2021 by Progress Software Corporation and/or one of its subsidiaries or affiliates. All rights reserved.
 ************************************************************************************************************************** */
  /*------------------------------------------------------------------------
     File        : IOModeHelper
@@ -29,7 +29,6 @@ class OpenEdge.Core.IOModeHelper abstract:
         @throws AssertionFailedError Thrown when an invalid enum is passed in */
     method static public character ToString(input pMode as IOModeEnum,
                                             input pParameterType as character):
-        define variable dashPos as integer no-undo.
         define variable mode as character no-undo.
         
         Assert:NotNull(pMode, 'IO Mode').
@@ -46,7 +45,7 @@ class OpenEdge.Core.IOModeHelper abstract:
                                     string(pMode and (IOModeEnum:By-Reference or IOModeEnum:Append or IOModeEnum:Bind))).
             otherwise
                 assign mode = string(pMode).
-        end.
+        end case.
         
         Assert:NotNull(mode, 'Formatted IO Mode').
         

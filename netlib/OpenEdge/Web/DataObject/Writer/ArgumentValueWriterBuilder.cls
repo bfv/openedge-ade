@@ -1,5 +1,5 @@
 /************************************************
-Copyright (c) 2016-2018 by Progress Software Corporation. All rights reserved.
+Copyright (c) 2016-2018, 2021 by Progress Software Corporation. All rights reserved.
 *************************************************/ 
 /*------------------------------------------------------------------------
     File        : ArgumentValueWriterBuilder 
@@ -96,7 +96,7 @@ class OpenEdge.Web.DataObject.Writer.ArgumentValueWriterBuilder inherits ConfigB
     constructor public ArgumentValueWriterBuilder (input poArgType as class Progress.Lang.Class):
         Assert:NotNull(poArgType, 'Argument type').
         assign this-object:ArgumentType = poArgType.
-    end method.
+    end constructor.
     
     /** Specifies the Entity object to use for the message body   
         
@@ -254,7 +254,7 @@ class OpenEdge.Web.DataObject.Writer.ArgumentValueWriterBuilder inherits ConfigB
         do:
             assign currentType = poArgType.
             do while valid-object(currentType) and not valid-object(writerType):
-                assign extent(ifaceType) = ?   
+                assign extent(ifaceType) = ?
                        ifaceType = currentType:GetInterfaces()
                        loopMax   = extent(ifaceType).
                 do cnt = 1 to loopMax while not valid-object(writerType): 
@@ -263,6 +263,13 @@ class OpenEdge.Web.DataObject.Writer.ArgumentValueWriterBuilder inherits ConfigB
                 assign writerType  = poRegistry:Get(currentType:TypeName) when not valid-object(writerType)
                        currentType = currentType:SuperClass.
             end.
+            
+            // if we ask for an interface, there's no SuperClass
+            if not valid-object(writerType)
+            and poArgType:IsInterface()
+            then
+                assign writerType = poRegistry:Get(get-class(Progress.Lang.Object):TypeName).
+            
             if valid-object(writerType) then
                 poRegistry:Put(poArgType:TypeName, writerType).
         end.

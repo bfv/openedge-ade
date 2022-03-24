@@ -1,5 +1,5 @@
 /************************************************
-Copyright (c)  2013, 2015-2016, 2019 by Progress Software Corporation. All rights reserved.
+Copyright (c)  2013, 2015-2016, 2019, 2021 by Progress Software Corporation. All rights reserved.
 *************************************************/
  /*------------------------------------------------------------------------
     File        : DataTypeHelper
@@ -41,7 +41,7 @@ class OpenEdge.Core.DataTypeHelper:
             when DataTypeEnum:ClassArray         then return 'Class &1 Extent':u.
             when DataTypeEnum:ProgressLangObject then return 'Progress.Lang.Object':u.
             otherwise                                 return string(poDataType).
-        end.
+        end case.
     end method.
           
     method static public logical IsPrimitive(poDataType as DataTypeEnum):
@@ -76,6 +76,7 @@ class OpenEdge.Core.DataTypeHelper:
     method static public character ToXmlSchemaType(input poDataType as DataTypeEnum):
         define variable cXmlSchemaType as character no-undo.
         
+        {&_proparse_ prolint-nowarn(recidkeyword)}
         case poDataType:
             when DataTypeEnum:BLOB       then assign cXmlSchemaType = 'base64Binary':u.
             when DataTypeEnum:Character  then assign cXmlSchemaType = 'string':u.
@@ -89,6 +90,7 @@ class OpenEdge.Core.DataTypeHelper:
             when DataTypeEnum:Integer    then assign cXmlSchemaType = 'int':u.
             when DataTypeEnum:Logical    then assign cXmlSchemaType = 'boolean':u.
             when DataTypeEnum:Raw        then assign cXmlSchemaType = 'base64Binary':u.
+            {&_proparse_ prolint-nowarn(recidkeyword)}
             when DataTypeEnum:Recid      then assign cXmlSchemaType = 'long':u.
             when DataTypeEnum:Rowid      then assign cXmlSchemaType = 'base64Binary':u.
             when DataTypeEnum:Handle     then assign cXmlSchemaType = 'long':u.

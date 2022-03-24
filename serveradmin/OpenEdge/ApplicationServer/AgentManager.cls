@@ -1,5 +1,5 @@
 /**************************************************************************
-Copyright (c)  2014 by Progress Software Corporation. All rights reserved.
+Copyright (c)  2014, 2021 by Progress Software Corporation. All rights reserved.
 **************************************************************************/
  /*------------------------------------------------------------------------
     File        : AgentManager.cls
@@ -15,7 +15,7 @@ block-level on error undo, throw.
 
 class OpenEdge.ApplicationServer.AgentManager:
 
-    define private variable pasam as class Progress.ApplicationServer.AgentManager.
+    define private variable pasam as class Progress.ApplicationServer.AgentManager no-undo.
     
     method public logical cancelRequest(input brokerSessionId as character,
                                         input requstId        as character):
@@ -66,7 +66,7 @@ class OpenEdge.ApplicationServer.AgentManager:
     method public logical dynamicPropertiesUpdate(input dynamicPropertiesString as character):
         return pasam:DynamicPropertiesUpdate(dynamicPropertiesString).
     end method.
-    
+
     method public logical TrackABLObjects(INPUT toggle AS Logical):
         return pasam:TrackABLObjects(toggle).
     end method.
@@ -101,6 +101,17 @@ class OpenEdge.ApplicationServer.AgentManager:
         return pasam:GetMemoryUseReport(AgentSessId, OUTPUT jsonrpt).
     end method.
 
+    METHOD PUBLIC LOGICAL PushProfilerData (
+                                INPUT  Url               AS CHARACTER,
+                                INPUT  RequestCount      AS INTEGER,
+                                INPUT  SettingsJson      AS LONGCHAR):
+        return pasam:PushProfilerData(Url, RequestCount, SettingsJson).
+    END METHOD.
+
+    METHOD PUBLIC LOGICAL GetProfilerSettings (OUTPUT Settings as LONGCHAR):
+        return pasam:GetProfilerSettings(OUTPUT Settings).
+    END METHOD.
+
     method public logical flushDeferredLog():
         return pasam:flushDeferredLog().
     end method.
@@ -109,6 +120,15 @@ class OpenEdge.ApplicationServer.AgentManager:
         return pasam:resetDeferredLog().
     end method.
     
+    method public logical ResetDynamicABLSessionLimit(OUTPUT sessionInfo AS Longchar):
+        return pasam:ResetDynamicABLSessionLimit(OUTPUT sessionInfo).
+    end method.
+
+    method public logical SetDynamicABLSessionLimit(INPUT limit AS Integer,
+                                                    OUTPUT sessionInfo AS Longchar):
+        return pasam:SetDynamicABLSessionLimit(limit, OUTPUT sessionInfo).
+    end method.
+
     constructor public AgentManager():
         pasam = new Progress.ApplicationServer.AgentManager().
     end constructor.

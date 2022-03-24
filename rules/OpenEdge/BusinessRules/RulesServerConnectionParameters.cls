@@ -99,7 +99,7 @@ class OpenEdge.BusinessRules.RulesServerConnectionParameters implements IConnect
                                                        input pDecisionServiceParams as IConnectionParameters ):
         Assert:IsType(pDecisionServiceParams, get-class(WebServiceConnectionParameters)).
         
-        assign this-object:AdminServiceConnectionParameters    = ?                      /* OCTA-15430 */
+        assign this-object:AdminServiceConnectionParameters    = ? /* OCTA-15430 */ 
                this-object:DecisionServiceConnectionParameters = pDecisionServiceParams
                this-object:FormatMask                          = FormatMaskEnum:Custom
                .

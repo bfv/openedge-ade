@@ -225,13 +225,6 @@ class OpenEdge.DataAdmin.Binding.AreaContext inherits DataAdminContext implement
         ValidateAreaType(phArea::name,phArea::type).      
     end method.      
     
-    method protected override void ValidateChildren(phArea as handle):
-        if pharea:row-state = row-created then 
-        do:
-            ValidateExtent(phArea::name).
-        end.    
-    end method.      
-          
     method private void ValidateAreaName(pcKey as char).  
         if pcKey = ? or pcKey = "" then 
              undo, throw new DataError("Area must have a name to be created").  
@@ -433,6 +426,13 @@ class OpenEdge.DataAdmin.Binding.AreaContext inherits DataAdminContext implement
                         + "number".
         super:ReadRow(json,pcExceptColumns).
     end method.
+
+    method protected override void ValidateChildren(phArea as handle):
+        if pharea:row-state = row-created then 
+        do:
+            ValidateExtent(pharea::name).
+        end.    
+    end method.    
     
     method protected override logical ValidValue(pccolumn as character,piValue as int): 
         

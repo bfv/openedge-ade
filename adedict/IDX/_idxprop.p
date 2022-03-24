@@ -166,6 +166,7 @@ END.
 find LAST dictdb._Index-Field of b_Index NO-ERROR.
 if AVAILABLE dictdb._Index-Field then /* the default index has no fields */
    s_Idx_Abbrev = dictdb._Index-Field._Abbreviate.
+  
 
 IF s_dbCache_type[s_dbCache_ix] <> "PROGRESS" THEN 
 DO: /* Foreign DB */
@@ -323,7 +324,7 @@ do:
       b_index._index-name = "_Time-Stamp-Seq"     OR
       b_index._index-name = "_Part-Rec-Id" )  THEN
    DO:     
-      IF ActRec:screen-value = "yes" THEN	    
+	  IF ActRec:screen-value = "yes" THEN	    
          enable ActRec
                 s_btn_OK
 	            s_btn_Save
@@ -386,7 +387,7 @@ else do:
 
    if s_Idx_Primary OR INDEX(capab, {&CAPAB_CHANGE_PRIMARY}) = 0 then
       s_Idx_Primary:sensitive in frame idxprops = no.
- 
+      
    if (NOT b_Index._Active OR INDEX(capab, {&CAPAB_INACTIVATE}) = 0 OR NOT l_actidx)
       AND 
         &IF "{&WINDOW-SYSTEM}" begins "MS-WIN"
@@ -394,7 +395,7 @@ else do:
           &ELSE ActRec:Label = "Active"
         &ENDIF
       THEN ActRec:sensitive in frame idxprops = no.
- 
+   
    if INDEX(capab, {&CAPAB_CHANGE_UNIQ}) = 0 then
       b_Index._Unique:sensitive in frame idxprops = no.   
    s_Idx_Local:sensitive in frame idxprops = no.

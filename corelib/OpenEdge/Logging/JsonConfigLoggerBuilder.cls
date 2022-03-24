@@ -1,16 +1,16 @@
 /************************************************
-Copyright (c) 2019 by Progress Software Corporation. All rights reserved.
+Copyright (c) 2019-2021 by Progress Software Corporation. All rights reserved.
 *************************************************/
 /*------------------------------------------------------------------------
     File        : JsonConfigLoggerBuilder
     Purpose     : Builds a filter logger from stored JSON configuration
-    Syntax      : 
-    Description : 
+    Syntax      :
+    Description :
     Author(s)   : pjudge
     Created     : 2019-08-01
     Notes       : * Builds a logger based on JSON config (from anywhere)
-                    - matching the schema in $DLC/src/corelib/OpenEdge/Logging/logging.config.schema 
-                  * Values are taken from this builder and loaded config read from the input JSON. 
+                    - matching the schema in $DLC/src/corelib/OpenEdge/Logging/logging.config.schema
+                  * Values are taken from this builder and loaded config read from the input JSON.
                     Any values set in this builder OVERRIDE the config values
                   * The logger name resolution follows that of log4j - described at
                      https://logging.apache.org/log4j/1.2/manual.html .
@@ -18,19 +18,18 @@ Copyright (c) 2019 by Progress Software Corporation. All rights reserved.
 block-level on error undo, throw.
 
 using OpenEdge.Core.Assert.
+using OpenEdge.Core.Json.JsonPropertyHelper.
 using OpenEdge.Core.Util.BuilderRegistry.
 using OpenEdge.Logging.Filter.ILoggerFilter.
 using OpenEdge.Logging.Filter.LogFilterBuilder.
 using OpenEdge.Logging.ILogWriter.
 using OpenEdge.Logging.LogLevelEnum.
 using OpenEdge.Logging.LoggerBuilder.
-using OpenEdge.Logging.VoidLogger.
 using Progress.Json.ObjectModel.JsonArray.
 using Progress.Json.ObjectModel.JsonDataType.
 using Progress.Json.ObjectModel.JsonObject.
 using Progress.Lang.AppError.
 using OpenEdge.Logging.JsonConfigLoggerBuilder.
-using OpenEdge.Core.Json.JsonPropertyHelper.
 
 class OpenEdge.Logging.JsonConfigLoggerBuilder inherits LoggerBuilder:
     
@@ -49,6 +48,7 @@ class OpenEdge.Logging.JsonConfigLoggerBuilder inherits LoggerBuilder:
         
         This is the registry of LogFilterBuilders and not the registry of
         log writers. */
+    {&_proparse_ prolint-nowarn(varusage)}
     define static private property FilterBuilders as BuilderRegistry no-undo
         get():
             if not valid-object(JsonConfigLoggerBuilder:FilterBuilders) then
@@ -59,6 +59,7 @@ class OpenEdge.Logging.JsonConfigLoggerBuilder inherits LoggerBuilder:
         private set.
     
     // Registry for holding this factory's logger filters
+    {&_proparse_ prolint-nowarn(varusage)}
     define static private property Filters as BuilderRegistry no-undo
         get():
             if not valid-object(JsonConfigLoggerBuilder:Filters) then
@@ -68,10 +69,9 @@ class OpenEdge.Logging.JsonConfigLoggerBuilder inherits LoggerBuilder:
         end get.
         private set.
     
-    define static private temp-table Logger no-undo
+    define static private temp-table LoggerConfig no-undo
         field LoggerName     as character
         field LogLevel       as character
-        field LoggerInstance as Progress.Lang.Object    // ILogWriter
         
         index idx1 as primary unique LoggerName
         .
@@ -90,19 +90,25 @@ class OpenEdge.Logging.JsonConfigLoggerBuilder inherits LoggerBuilder:
        @param character The logger type being built */
     constructor public JsonConfigLoggerBuilder (input pcLoggerType as character):
         super(pcLoggerType).
-    end method.
+    end constructor.
     
     /* Clears all the current logger configurations */
     method static public void ClearConfig():
-        empty temp-table Logger.
-        empty temp-table LogFilter.
+        define buffer lbConfig for LoggerConfig.
+        define buffer lbFilter for LogFilter.
+        
+        for each lbConfig:
+            LoggerBuilder:RemoveFromCache(lbConfig.LoggerName).
+            delete lbConfig.
+        end.
+        empty temp-table lbFilter.
         
         JsonConfigLoggerBuilder:FilterBuilders:Clear().
         JsonConfigLoggerBuilder:Filters:Clear().
     end method.
     
     /* Loads logging configuration from JSON. Is an ADDITIVE operation - existing
-       config is not cleared. To remove existing config, call the ClearConfig() 
+       config is not cleared. To remove existing config, call the ClearConfig()
        static method.
        
        @param JsonObject JSON representation of the lgging configuration */
@@ -116,11 +122,10 @@ class OpenEdge.Logging.JsonConfigLoggerBuilder inherits LoggerBuilder:
         define variable propertyName as character no-undo.
         define variable oConfig as JsonObject no-undo.
         define variable oData as JsonObject no-undo.
-        define variable oType as JsonObject no-undo.
         define variable oFilters as JsonArray no-undo.
         define variable resolvedType as class Progress.Lang.Class no-undo.
         
-        define buffer lbLogger for Logger.
+        define buffer lbLogger for LoggerConfig.
         define buffer lbFilter for LogFilter.
         
         if not valid-object(pConfig) then
@@ -135,15 +140,21 @@ class OpenEdge.Logging.JsonConfigLoggerBuilder inherits LoggerBuilder:
                    cNames  = oConfig:GetNames()
                    iMax    = extent(cNames)
                    .
+            PROP-LOOP:
             do iLoop = 1 to iMax:
                 // convert to string/char for ease-of-use
+                {&_proparse_ prolint-nowarn(overflow)}
                 assign propertyName = string(cNames[iLoop]).
                 // first in wins
                 if can-find(lbLogger where lbLogger.LoggerName eq propertyName) then
-                    next.
+                    next PROP-LOOP.
                 
                 if not oConfig:GetType(propertyName) eq JsonDataType:OBJECT then
-                    next.
+                    next PROP-LOOP.
+                
+                // if there's a cached instance with this logger name, remove it, since its configuration
+                // may differ from this one
+                LoggerBuilder:RemoveFromCache(propertyName).
                 
                 create lbLogger.
                 assign oData               = oConfig:GetJsonObject(propertyName)
@@ -170,7 +181,7 @@ class OpenEdge.Logging.JsonConfigLoggerBuilder inherits LoggerBuilder:
                                        lbFilter.FilterOptions = oData
                                        lbFilter.FilterName    = oData:GetCharacter(PROP_NAME)
                                         .
-                                // strip the filterName property from the options 
+                                // strip the filterName property from the options
                                 oData:Remove(PROP_NAME).
                             end.
                             when JsonDataType:STRING then
@@ -190,8 +201,9 @@ class OpenEdge.Logging.JsonConfigLoggerBuilder inherits LoggerBuilder:
                    iMax           = extent(cNames)
                    .
             do iLoop = 1 to iMax:
-                // this will give us the filter's type 
-                assign propertyName = cNames[iLoop]
+                // this will give us the filter's type
+                {&_proparse_ prolint-nowarn(overflow)}
+                assign propertyName = string(cNames[iLoop])
                        resolvedType = GetABLType(oConfig, propertyName)
                        .
                 if valid-object(resolvedType) then
@@ -218,19 +230,18 @@ class OpenEdge.Logging.JsonConfigLoggerBuilder inherits LoggerBuilder:
        
        @return ILogWriter A new or cached logged */
     method override protected ILogWriter GetLoggerInstance():
-        define variable logWriter as ILogWriter no-undo.
         define variable filter as ILoggerFilter no-undo.
         define variable logLevel as LogLevelEnum no-undo.
         define variable filterBuilder as LogFilterBuilder no-undo.
         
-        define buffer lbLogger for Logger.
+        define buffer lbLogger for LoggerConfig.
         define buffer lbFilter for LogFilter.
         
         if FindLogger(this-object:LoggerType, buffer lbLogger) then
         do:
             // use the cached version of the logger if there is one for this config
-            if valid-object(lbLogger.LoggerInstance) then
-                return cast(lbLogger.LoggerInstance, ILogWriter).
+            if LoggerBuilder:IsCached(this-object:LoggerType) then
+                return LoggerBuilder:GetCachedInstance(this-object:LoggerType).
             
             // Set the level
             if HasOption(PROP_LEVEL) then
@@ -255,7 +266,7 @@ class OpenEdge.Logging.JsonConfigLoggerBuilder inherits LoggerBuilder:
                 if JsonConfigLoggerBuilder:Filters:Has(lbFilter.FilterName) then
                     filterBuilder:FromRegistry(JsonConfigLoggerBuilder:Filters).
                 
-                // add JSON options to the filter builder 
+                // add JSON options to the filter builder
                 filterBuilder:Options(cast(lbFilter.FilterOptions, JsonObject)).
                 
                 // now build the filter and add to the config
@@ -265,27 +276,15 @@ class OpenEdge.Logging.JsonConfigLoggerBuilder inherits LoggerBuilder:
                     AddFilter(filter).
                 else
                     LogMessage(substitute('Unable to build filter "&1" for logger "&2"',
-                                          lbFilter.FilterName, 
+                                          lbFilter.FilterName,
                                           lbFilter.LoggerName  ),
                                LogLevelEnum:WARN).
             end.
         end.
         
-        // Let the config-driven builder build the logger: if we don't have config for it, 
-        // try the default (which is typically log-manager-based) 
-        assign logWriter = super:GetLoggerInstance().
-        
-        // cache the logger
-        if available lbLogger then
-            assign lbLogger.LoggerInstance = logWriter.
-        
-        return logWriter.
-        catch err as Progress.Lang.Error:
-            LoggerBuilder:LogMessage(substitute('Error building logger &1: &2', lbLogger.LoggerName, err:GetMessage(1)),
-                                     LogLevelEnum:ERROR).
-            
-            return new VoidLogger(lbLogger.LoggerName).
-        end catch.
+        // Let the config-driven builder build the logger: if we don't have config for it,
+        // try the default (which is typically log-manager-based)
+        return super:GetLoggerInstance().
     end method.
     
     /* Finds the log level for a logger to use, based on the logger type
@@ -301,9 +300,11 @@ class OpenEdge.Logging.JsonConfigLoggerBuilder inherits LoggerBuilder:
         define variable logLevel as LogLevelEnum no-undo.
         define variable dotPos as integer no-undo.
         
-        define buffer lbLogger for Logger.
+        define buffer lbLogger for LoggerConfig.
         
         if can-find(lbLogger where lbLogger.LoggerName eq pcLoggerType) then
+            /* Intentional lack of no-error on find. */
+            {&_proparse_ prolint-nowarn(findnoerror)}
             find lbLogger where lbLogger.LoggerName eq pcLoggerType.
         if available lbLogger then
             assign logLevel = LogLevelEnum:GetEnum(lbLogger.LogLevel)
@@ -317,16 +318,18 @@ class OpenEdge.Logging.JsonConfigLoggerBuilder inherits LoggerBuilder:
             assign pcLoggerType = substring(pcLoggerType, 1, dotPos - 1)
                    dotPos       = r-index(pcLoggerType, '.':u).
             if can-find(lbLogger where lbLogger.LoggerName eq pcLoggerType) then
+                /* Intentional lack of no-error on find. */
+                {&_proparse_ prolint-nowarn(findnoerror)}
                 find lbLogger where lbLogger.LoggerName eq pcLoggerType.
             if available lbLogger then
                 assign logLevel = LogLevelEnum:GetEnum(lbLogger.LogLevel)
                        no-error.
         end.
         
-        if not valid-object(logLevel) 
+        if not valid-object(logLevel)
            // don't loop forever
-           and JsonConfigLoggerBuilder:DefaultLogger ne pcLoggerType 
-        then 
+           and JsonConfigLoggerBuilder:DefaultLogger ne pcLoggerType
+        then
             assign logLevel = FindLevel(JsonConfigLoggerBuilder:DefaultLogger).
         
         if not valid-object(logLevel) then
@@ -340,7 +343,7 @@ class OpenEdge.Logging.JsonConfigLoggerBuilder inherits LoggerBuilder:
     end method.
     
     /* Returns a type name from a property we expect to have a type. Basically resolving the
-       typeName / typeProperty values into an P.L.C 
+       typeName / typeProperty values into an P.L.C
           "definitions": {
             "typeName": {
               "type": "string",
@@ -374,8 +377,8 @@ class OpenEdge.Logging.JsonConfigLoggerBuilder inherits LoggerBuilder:
         define variable typeName as character no-undo.
         define variable typeData as JsonObject no-undo.
         
-        if    pcPropName eq '':u 
-           or pcPropName eq ? 
+        if    pcPropName eq '':u
+           or pcPropName eq ?
            or not valid-object(poParent)
         then
             return ?.
@@ -415,17 +418,25 @@ class OpenEdge.Logging.JsonConfigLoggerBuilder inherits LoggerBuilder:
        
        @param  character The logger type to find
        @param  buffer A buffer reference to the logger temp-table
-       @return logical TRUE if a logger record was found. If TRUE, the 
+       @return logical TRUE if a logger record was found. If TRUE, the
                        buffer will AVAILABLE; if false, not     */
     method private logical FindLogger(input pcLoggerType as character,
-                                      buffer pbLogger for Logger):
+                                      buffer pbLogger for LoggerConfig):
         define variable dotPos as integer no-undo.
-        define variable isDefault as logical no-undo. 
+        define variable isDefault as logical no-undo.
         
         // so we don't end up with a previously-found buffer
         release pbLogger.
         
+        // if there's no logger name, return
+        if    pcLoggerType eq ?
+           or pcLoggerType eq '':u
+        then
+            return false.
+        
         if can-find(pbLogger where pbLogger.LoggerName eq pcLoggerType) then
+            /* Intentional lack of no-error on find. */
+            {&_proparse_ prolint-nowarn(findnoerror)}
             find pbLogger where pbLogger.LoggerName eq pcLoggerType.
         if available pbLogger then
             return true.
@@ -439,6 +450,8 @@ class OpenEdge.Logging.JsonConfigLoggerBuilder inherits LoggerBuilder:
             assign pcLoggerType = substring(pcLoggerType, 1, dotPos - 1)
                    dotPos       = r-index(pcLoggerType, '.':u).
             if can-find(pbLogger where pbLogger.LoggerName eq pcLoggerType) then
+                /* Intentional lack of no-error on find. */
+                {&_proparse_ prolint-nowarn(findnoerror)}
                 find pbLogger where pbLogger.LoggerName eq pcLoggerType.
             if available pbLogger then
                 return true.
@@ -451,7 +464,7 @@ class OpenEdge.Logging.JsonConfigLoggerBuilder inherits LoggerBuilder:
         return false.
     end method.
     
-    /* Ensures that a Filter type is the one we were expecting. 
+    /* Ensures that a Filter type is the one we were expecting.
         
        @param character (mandatory) The ABL Filter name used to process the event
        @param character (optional) A hash used to verify the Filter's authenticity

@@ -1,5 +1,5 @@
 /* *************************************************************************************************************************
-Copyright (c) 2016-2019 by Progress Software Corporation and/or one of its subsidiaries or affiliates. All rights reserved.
+Copyright (c) 2016-2021 by Progress Software Corporation and/or one of its subsidiaries or affiliates. All rights reserved.
 ************************************************************************************************************************** */
 /*------------------------------------------------------------------------
     File        : ServiceRegistryLoader
@@ -46,7 +46,8 @@ using OpenEdge.Core.Json.JsonPropertyHelper.
 using OpenEdge.Core.JsonDataTypeEnum.
 
 class OpenEdge.Web.DataObject.ServiceRegistryLoader implements ISupportLogging:
-    /* We never add records to this, just */
+
+    /* We never add records to this, just use it to test case-sensitivity. */
     define private static temp-table ttCaseSensitive no-undo 
         field csChar as character case-sensitive
         field csClob as clob case-sensitive
@@ -260,6 +261,7 @@ class OpenEdge.Web.DataObject.ServiceRegistryLoader implements ISupportLogging:
                         interval(registerTime[2], registerTime[1], string(DateTimeAddIntervalEnum:Milliseconds)))).
         
         return svc.
+
         catch oError as Progress.Lang.Error:
             Logger:Error(substitute('Error registering service "&1 v&2"', svc:Name, string(svc:Version)), oError).
             this-object:Registry:DeregisterService(pcServiceName, SemanticVersion:Parse(pcVersion)).
@@ -291,14 +293,17 @@ class OpenEdge.Web.DataObject.ServiceRegistryLoader implements ISupportLogging:
         assign cSchemaName = poSchemas:GetNames()
                iSchemaMax  = extent(cSchemaName)
                .
+        SCHEMABLK:
         do iSchemaLoop = 1 to iSchemaMax:
+            /* Ignore warnings about possible overflows, as schema names should not exceed 32KB. */
+            {&_proparse_ prolint-nowarn(overflow)}
             assign schemaName = string(cSchemaName[iSchemaLoop]).   
             if not poSchemas:GetType(schemaName) eq JsonDataType:OBJECT then
-                next.
+                next SCHEMABLK.
             
             assign oSchema = poSchemas:GetJsonObject(schemaName).
             if oSchema:Has(string(ServiceMappingFileSchemaEnum:fields)) then
-                assign hSchema = CreateTempTable(schemaName, oSchema ).
+                assign hSchema = CreateTempTable(schemaName, oSchema).
             else
             do:
                 create dataset hSchema.
@@ -308,13 +313,14 @@ class OpenEdge.Web.DataObject.ServiceRegistryLoader implements ISupportLogging:
                        iInnerMax       = extent(cTTName)
                        attribs         = ?
                        .
+                INNERBLK:
                 do iInnerLoop = 1 to iInnerMax:
                     if cTTName[iInnerLoop] eq string(ServiceMappingFileSchemaEnum:attr) then
                     do:
                         if oSchema:GetType(string(ServiceMappingFileSchemaEnum:attr)) eq JsonDataType:OBJECT then
                             assign attribs = oSchema:GetJsonObject(string(ServiceMappingFileSchemaEnum:attr)).
                         
-                        next.
+                        next INNERBLK.
                     end.
                     
                     assign oTable     = oSchema:GetJsonObject(cTTName[iInnerLoop])
@@ -364,11 +370,16 @@ class OpenEdge.Web.DataObject.ServiceRegistryLoader implements ISupportLogging:
         define variable hdlParent as handle no-undo.
         define variable hdlRelation as handle no-undo.
         define variable delim as character no-undo.
+        define variable isNested as logical no-undo.
+        define variable isReposition as logical no-undo.
+        define variable isActive as logical no-undo.
+        define variable isRecursive as logical no-undo.
         
         Assert:NotNull(pDataset, 'Dataset handle').
         Assert:NotNull(pRelations, 'Dataset relations').
         
         assign cnt = pRelations:Length.
+        LOOPBLK:
         do loop = 1 to cnt
            on error undo, throw:
             
@@ -376,7 +387,7 @@ class OpenEdge.Web.DataObject.ServiceRegistryLoader implements ISupportLogging:
             do:
                 Logger:Warn(substitute('Unable to add relation &2 to dataset &1 - expecting JsonObject but was &3', 
                                 pDataset:name, loop, string(JsonDataTypeEnum:GetEnum(pRelations:GetType(loop))))).
-                next.
+                next LOOPBLK.
             end.
             
             assign relData = pRelations:GetJsonObject(loop).
@@ -385,21 +396,21 @@ class OpenEdge.Web.DataObject.ServiceRegistryLoader implements ISupportLogging:
             do:
                 Logger:Warn(substitute('Unable to add relation &2 to dataset &1 - no parent table name provided', 
                                 pDataset:name, loop)).
-                next.
+                next LOOPBLK.
             end.
             
             if not JsonPropertyHelper:HasTypedProperty(relData, string(ServiceMappingFileSchemaEnum:childTable), JsonDataType:STRING) then
             do:
                 Logger:Warn(substitute('Unable to add relation &2 to dataset &1 - no child table name provided', 
                                 pDataset:name, loop)).
-                next.
+                next LOOPBLK.
             end.
             
             if not JsonPropertyHelper:HasTypedProperty(relData, string(ServiceMappingFileSchemaEnum:fields), JsonDataType:ARRAY) then
             do:
                 Logger:Warn(substitute('Unable to add relation &2 to dataset &1 - no fields provided', 
                                 pDataset:name, loop)).
-                next.
+                next LOOPBLK.
             end.
             
             assign hdlParent = pDataset:get-buffer-handle(relData:GetCharacter(string(ServiceMappingFileSchemaEnum:parentTable)))
@@ -430,22 +441,38 @@ class OpenEdge.Web.DataObject.ServiceRegistryLoader implements ISupportLogging:
             if String:IsNullOrEmpty(fldPairs) then
             do:
                 Logger:Warn(substitute('Data-relation field pairs for dataset &1', pDataset:name)).
-                next.
+                next LOOPBLK.
             end.
             
-            assign hdlRelation = pDataset:add-relation(hdlParent, hdlChild, fldPairs).
+            if JsonPropertyHelper:HasTypedProperty(relData, string(ServiceMappingFileSchemaEnum:nested), JsonDataType:BOOLEAN) then
+                assign isNested = relData:GetLogical(string(ServiceMappingFileSchemaEnum:nested)).
+            else
+                assign isNested = ?.
+            
+            if JsonPropertyHelper:HasTypedProperty(relData, string(ServiceMappingFileSchemaEnum:active), JsonDataType:BOOLEAN) then
+                assign isActive = relData:GetLogical(string(ServiceMappingFileSchemaEnum:active)).
+            else
+                assign isActive = ?. 
+            
+            if JsonPropertyHelper:HasTypedProperty(relData, string(ServiceMappingFileSchemaEnum:reposition), JsonDataType:BOOLEAN) then
+                assign isReposition = relData:GetLogical(string(ServiceMappingFileSchemaEnum:reposition)).
+            else
+                assign isReposition = ?.
+            
+            if JsonPropertyHelper:HasTypedProperty(relData, string(ServiceMappingFileSchemaEnum:recursive), JsonDataType:BOOLEAN) then
+                assign isRecursive = relData:GetLogical(string(ServiceMappingFileSchemaEnum:recursive)).
+            else
+                assign isRecursive = ?.
+            
+            assign hdlRelation = pDataset:add-relation(hdlParent, hdlChild, fldPairs,
+                                                       isReposition, isNested, isActive, isRecursive).
             
             // add optional values
             if JsonPropertyHelper:HasTypedProperty(relData, string(ServiceMappingFileSchemaEnum:name), JsonDataType:STRING) then
                 assign hdlRelation:name = relData:GetCharacter(string(ServiceMappingFileSchemaEnum:name)).
-            if JsonPropertyHelper:HasTypedProperty(relData, string(ServiceMappingFileSchemaEnum:nested), JsonDataType:BOOLEAN) then
-                assign hdlRelation:nested = relData:GetLogical(string(ServiceMappingFileSchemaEnum:nested)).
-            if JsonPropertyHelper:HasTypedProperty(relData, string(ServiceMappingFileSchemaEnum:active), JsonDataType:BOOLEAN) then
-                assign hdlRelation:active = relData:GetLogical(string(ServiceMappingFileSchemaEnum:active)).
-            if JsonPropertyHelper:HasTypedProperty(relData, string(ServiceMappingFileSchemaEnum:recursive), JsonDataType:BOOLEAN) then
-                assign hdlRelation:recursive = relData:GetLogical(string(ServiceMappingFileSchemaEnum:recursive)).
-            if JsonPropertyHelper:HasTypedProperty(relData, string(ServiceMappingFileSchemaEnum:reposition), JsonDataType:BOOLEAN) then
-                assign hdlRelation:reposition = relData:GetLogical(string(ServiceMappingFileSchemaEnum:reposition)).
+            
+            if JsonPropertyHelper:HasTypedProperty(relData, string(ServiceMappingFileSchemaEnum:foreignKeyHidden), JsonDataType:BOOLEAN) then
+                assign hdlRelation:foreign-key-hidden = relData:GetLogical(string(ServiceMappingFileSchemaEnum:foreignKeyHidden)).
             
             catch e as Progress.Lang.Error :
                 Logger:Warn(substitute('Unable to add data-relation for dataset &1', pDataset:name),
@@ -480,7 +507,11 @@ class OpenEdge.Web.DataObject.ServiceRegistryLoader implements ISupportLogging:
         define variable attrIdx as integer no-undo.
         define variable fieldWithAttr as integer extent no-undo.
         define variable ablType as character no-undo.
-        
+        define variable lHasPrimary as logical no-undo.
+        define variable lUnique as logical no-undo.
+        define variable lPrimary as logical no-undo.
+        define variable lWord as logical no-undo.
+
         create temp-table hTable.
         
         assign oFieldList = poTable:GetJsonArray(string(ServiceMappingFileSchemaEnum:fields))
@@ -532,16 +563,32 @@ class OpenEdge.Web.DataObject.ServiceRegistryLoader implements ISupportLogging:
             assign oIndexList  = poTable:GetJsonObject(string(ServiceMappingFileSchemaEnum:indexes))
                    cIdxName    = oIndexList:GetNames()
                    iNumIndexes = extent(cIdxName).
+        INDEXBLK:
         do iIndexLoop = 1 to iNumIndexes:
-            // basically means there are no indexes
+            // Basically means there are no [defined] indexes
             if cIdxName[iIndexLoop] eq 'default':u then
-                next.
-            
-            assign oIndex = oIndexList:GetJsonObject(cIdxName[iIndexLoop]).
-            hTable:add-new-index(cIdxName[iIndexLoop],
-                                 oIndex:GetLogical(string(ServiceMappingFileSchemaEnum:unique)),   
-                                 oIndex:GetLogical(string(ServiceMappingFileSchemaEnum:primary)),
-                                 oIndex:GetLogical(string(ServiceMappingFileSchemaEnum:word))).
+                next INDEXBLK.
+
+            assign
+                oIndex   = oIndexList:GetJsonObject(cIdxName[iIndexLoop])
+                lUnique  = oIndex:GetLogical(string(ServiceMappingFileSchemaEnum:unique))
+                lPrimary = oIndex:GetLogical(string(ServiceMappingFileSchemaEnum:primary))
+                lWord    = oIndex:GetLogical(string(ServiceMappingFileSchemaEnum:word))
+                .
+
+            // By definition a temp-table may only have 1 index marked as primary, regardless of index fields.
+            // Only the first primary index to be added as such, while any others will be created as non-primary. 
+            if lPrimary and not lHasPrimary then do:
+                assign lHasPrimary = true. // On the first primary index, mark that we have our 1 possible.
+                Logger:Info(substitute('Adding primary index "&1" on temp-table "&2".', cIdxName[iIndexLoop],  pcName)).
+            end.
+            else if lPrimary then do:
+                assign lPrimary = false. // Cannot have more primary indexes after the first is encountered.
+                Logger:Warn(substitute('A primary index already exists on "&1", adding "&2" as non-primary.', pcName, cIdxName[iIndexLoop])).
+            end.
+
+            hTable:add-new-index(cIdxName[iIndexLoop], lUnique, lPrimary, lWord).
+
             assign oFieldList = oIndex:GetJsonArray(string(ServiceMappingFileSchemaEnum:fields))
                    iNumFields = oFieldList:Length.
             do iFieldLoop = 1 to iNumFields:
@@ -556,7 +603,7 @@ class OpenEdge.Web.DataObject.ServiceRegistryLoader implements ISupportLogging:
             end.
         end.
         
-        // indicate that the TT was defined with BEFORE-TABLE
+        // Indicate that the TT was defined with BEFORE-TABLE
         if poTable:Has(string(ServiceMappingFileSchemaEnum:trackChanges)) then
             assign lHasBeforeTable = poTable:GetLogical(string(ServiceMappingFileSchemaEnum:trackChanges)).
         
@@ -608,8 +655,6 @@ class OpenEdge.Web.DataObject.ServiceRegistryLoader implements ISupportLogging:
         define variable cMethod as longchar extent no-undo.
         define variable methodName as character no-undo.
         define variable oMethod as MethodEnum no-undo.
-        define variable iSvcLoop as integer no-undo.
-        define variable iSvcMax as integer no-undo.
         define variable iUriLoop as integer no-undo.
         define variable iUriMax as integer no-undo.
         define variable iVerbLoop as integer no-undo.
@@ -640,6 +685,7 @@ class OpenEdge.Web.DataObject.ServiceRegistryLoader implements ISupportLogging:
                .
         URI-LOOP:
         do iUriLoop = 1 to iUriMax:
+            {&_proparse_ prolint-nowarn(overflow)}
             assign extent(cMethod) = ?
                    propertyName    = string(relativeUris[iUriLoop])
                    oUri            = poOperations:GetJsonObject(propertyName)
@@ -654,6 +700,7 @@ class OpenEdge.Web.DataObject.ServiceRegistryLoader implements ISupportLogging:
             
             VERB-LOOP:
             do iVerbLoop = 1 to iVerbMax:
+                {&_proparse_ prolint-nowarn(overflow)}
                 assign methodName = string(cMethod[iVerbLoop])
                        oMethod    = MethodEnum:GetEnum(methodName)
                        oVerb      = oUri:GetJsonObject(methodName)
@@ -815,13 +862,13 @@ class OpenEdge.Web.DataObject.ServiceRegistryLoader implements ISupportLogging:
                                                                       ).
                     // defaults  to VOID
                     otherwise
+                        {&_proparse_ prolint-nowarn(overflow)}
                         assign oMappedOperation = new MappedOperation(propertyName,
                                                                       oMethod,
                                                                       (if oVerb:Has(string(ServiceMappingFileSchemaEnum:contentType)) then oVerb:GetCharacter(string(ServiceMappingFileSchemaEnum:contentType)) else '':u),
                                                                       string(TargetTypeEnum:Void),
                                                                       // target name can be stringified JSON
-                                                                      (if oVerb:GetType(string(ServiceMappingFileSchemaEnum:void)) eq JsonDataType:NULL then '':u
-                                                                       else string(oVerb:GetJsonText(string(ServiceMappingFileSchemaEnum:void))) ),
+                                                                      (if not oVerb:Has(string(ServiceMappingFileSchemaEnum:void)) or oVerb:GetType(string(ServiceMappingFileSchemaEnum:void)) eq JsonDataType:NULL then '':u else string(oVerb:GetJsonText(string(ServiceMappingFileSchemaEnum:void))) ),
                                                                       '':u,     /* type-of */
                                                                       '':u,     /* function */
                                                                       (if oVerb:Has(string(ServiceMappingFileSchemaEnum:options)) then CreateOperationOptions(oVerb:GetJsonObject(string(ServiceMappingFileSchemaEnum:options))) else ?),
@@ -849,6 +896,7 @@ class OpenEdge.Web.DataObject.ServiceRegistryLoader implements ISupportLogging:
                            propMax   = extent(propNames)
                            .
                     do propLoop = 1 to propMax:
+                        {&_proparse_ prolint-nowarn(overflow)}
                         assign propertyName = string(propNames[propLoop]). 
                         if propData:GetType(propertyName) eq JsonDataType:STRING then
                             oMappedOperation:Headers:Put( HttpHeaderBuilder:Build(propertyName)
@@ -906,6 +954,7 @@ class OpenEdge.Web.DataObject.ServiceRegistryLoader implements ISupportLogging:
                cServiceName = oServiceList:GetNames()
                iMax         = extent(cServiceName)
                .
+        LOOPBLK:
         do iLoop = 1 to iMax:
             case oServiceList:GetType(cServiceName[iLoop]):
                 when JsonDataType:OBJECT then
@@ -919,7 +968,7 @@ class OpenEdge.Web.DataObject.ServiceRegistryLoader implements ISupportLogging:
                 do:
                     Logger:Debug(substitute('Unable to find any load service &1 from &2 JSON data1',
                                     cServiceName[iLoop], oServiceList:GetType(cServiceName[iLoop]))).
-                    next.
+                    next LOOPBLK.
                 end.
             end case.
             
@@ -963,7 +1012,7 @@ class OpenEdge.Web.DataObject.ServiceRegistryLoader implements ISupportLogging:
         assign oServiceList = oMap:GetJsonObject(string(ServiceMappingFileSchemaEnum:services)). 
         case true:
             when oServiceList:Has(pcServiceName) then
-                . //no-op
+                /* no-op */ .
             when oServiceList:Has('/':u + pcServiceName) then
                 assign pcServiceName = '/':u + pcServiceName. 
             otherwise
@@ -985,7 +1034,6 @@ class OpenEdge.Web.DataObject.ServiceRegistryLoader implements ISupportLogging:
             do:
                 Logger:Debug(substitute('Unable to find any load service &1 from &2 JSON data1',
                                 pcServiceName, oServiceList:GetType(pcServiceName))).
-                next.
             end.
         end case.
         
@@ -1084,7 +1132,6 @@ class OpenEdge.Web.DataObject.ServiceRegistryLoader implements ISupportLogging:
     method public void RegisterAllFromFolder(input pcFolder as character):
         define variable cService as character no-undo.
         define variable cFlag as character no-undo.
-        define variable lRegistered as logical no-undo.
         
         AssertFile:DirectoryExists(pcFolder).
         
@@ -1116,10 +1163,8 @@ class OpenEdge.Web.DataObject.ServiceRegistryLoader implements ISupportLogging:
         define variable options as OperationOptions no-undo.
         define variable maxProps as integer no-undo.
         define variable loop as integer no-undo.
-        define variable childLoop as integer no-undo.
         define variable propName as character extent no-undo.
         define variable jsonData as JsonObject no-undo.
-        define variable arrayData as JsonArray no-undo.
         define variable schemaOption as SchemaOption no-undo.
         
         assign options = new OperationOptions().
@@ -1175,9 +1220,10 @@ class OpenEdge.Web.DataObject.ServiceRegistryLoader implements ISupportLogging:
                    propName = jsonData:GetNames()
                    maxProps = extent(propName)
                    .
+            LOOPBLK:
             do loop = 1 to maxProps:
                 if not jsonData:GetType(propName[loop]) eq JsonDataType:OBJECT then
-                    next.
+                    next LOOPBLK.
                 
                 assign schemaOption = new SchemaOption(propName[loop]).
                 LoadSchemaOptions(schemaOption, jsonData:GetJsonObject(propName[loop])).
@@ -1239,7 +1285,7 @@ class OpenEdge.Web.DataObject.ServiceRegistryLoader implements ISupportLogging:
                                   input childData:GetJsonObject(propertyNames[loop])).
             end.
         end.
-    end.
+    end method.
     
     /** Loads service writers from JSON.
         
@@ -1255,10 +1301,11 @@ class OpenEdge.Web.DataObject.ServiceRegistryLoader implements ISupportLogging:
         
         Assert:NotNull(pData, 'Writer data').
         assign cnt = pData:Length.
+        COUNTLOOP:
         do loop = 1 to cnt
         on error undo, throw:
             if not pData:GetType(loop) eq JsonDataType:OBJECT then
-                next.
+                next COUNTLOOP.
             
             assign writerMap = pData:GetJsonObject(loop).
             if     writerMap:Has(string(ServiceMappingFileSchemaEnum:name))
@@ -1272,8 +1319,10 @@ class OpenEdge.Web.DataObject.ServiceRegistryLoader implements ISupportLogging:
                 assign writerType = Progress.Lang.Class:GetClass(writerMap:GetCharacter(string(ServiceMappingFileSchemaEnum:type))).
             
             pService:ArgumentWriters:Put(writerName, writerType).
-            catch loadError as Progress.Lang.Error :
-                next.
+
+            {&_proparse_ prolint-nowarn(varusage)}
+            catch uncaught as Progress.Lang.Error:
+                next COUNTLOOP.
             end catch. 
         end.
     end method.
@@ -1282,6 +1331,7 @@ class OpenEdge.Web.DataObject.ServiceRegistryLoader implements ISupportLogging:
         
         @param DataObjectService The service
         @param JsonObject The service options */
+    {&_proparse_ prolint-nowarn(varusage)}
     method private void LoadServiceOptions(input pService as DataObjectService,
                                            input pData as JsonObject):
         assign pService:Options = new ServiceOptions().

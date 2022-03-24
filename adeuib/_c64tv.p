@@ -1,9 +1,9 @@
-/***********************************************************************
+/*********************************************************************
 * Copyright (C) 2014-2021 by Progress Software Corporation. All rights *
-* reserved.  Prior versions of this work may contain portions          *
-* contributed by participants of Possenet.                             *
-*                                                                      *
-************************************************************************/
+* reserved.  Prior versions of this work may contain portions        *
+* contributed by participants of Possenet.                           *
+*                                                                    *
+*********************************************************************/
 
 /*----------------------------------------------------------------------------
 
@@ -17,7 +17,7 @@ Author: Rohit Kumar
                     
 Date Created: 11/12/2014
 
-Modified: tmasood 03/02/2021 Stop the message to display again
+Modified: tmasood 02/17/2021 Stop the message to display again   
 
 ----------------------------------------------------------------------------*/
 &GLOBAL-DEFINE WIN95-BTN YES

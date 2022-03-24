@@ -1,11 +1,11 @@
 /************************************************
-Copyright (c) 2015-2020 by Progress Software Corporation. All rights reserved.
-*************************************************/ 
+Copyright (c) 2015-2021 by Progress Software Corporation. All rights reserved.
+*************************************************/
 /*------------------------------------------------------------------------
     File        : JsonBodyWriter
     Purpose     : Writes JSON as a series of bytes/chars
-    Syntax      : 
-    Description : 
+    Syntax      :
+    Description :
     Author(s)   : pjudge
     Created     : Thu Jan 29 10:47:13 EST 2015
     Notes       : * This writer will never (deliberately) write formatted JSON;
@@ -30,6 +30,7 @@ using OpenEdge.Core.Json.IJsonSerializer.
 using OpenEdge.Core.Json.JsonConverter.
 using OpenEdge.Core.JsonDataTypeEnum.
 using OpenEdge.Core.Memptr.
+using OpenEdge.Logging.Logger.
 using OpenEdge.Net.HTTP.Filter.Payload.MessageWriter.
 using Progress.IO.FileInputStream.
 using Progress.Json.ObjectModel.JsonArray.
@@ -51,11 +52,13 @@ class OpenEdge.Net.HTTP.Filter.Payload.JsonBodyWriter inherits MessageWriter:
      
     constructor public JsonBodyWriter():
         super (get-class(ByteBucket)).
-    end constructor.    
+    end constructor.
     
     method override public void Open():
         if not valid-object(this-object:Entity) then
             assign this-object:Entity = ByteBucket:Instance().
+        else
+            cast(this-object:Entity, ByteBucket):Clear().
         
         super:Open().
     end method.
@@ -86,9 +89,7 @@ class OpenEdge.Net.HTTP.Filter.Payload.JsonBodyWriter inherits MessageWriter:
         define variable iBytesWritten as int64 no-undo.
         define variable fileStream as FileInputStream no-undo.
         define variable fileExt as character no-undo.
-        define variable objArray as Progress.Lang.Object extent no-undo.
-        define variable jsonData as JsonObject no-undo.
-        
+       
         // JSON is defined as UTF-8
         fix-codepage(lcJson) = 'utf-8':u.
         
@@ -99,7 +100,7 @@ class OpenEdge.Net.HTTP.Filter.Payload.JsonBodyWriter inherits MessageWriter:
                 
                 cast(this-object:Entity, ByteBucket):PutString(lc(string(JsonDataTypeEnum:Null))).
                 return length(lc(string(JsonDataTypeEnum:Null)), 'raw':u).
-            end.    // nulls/empty  
+            end.    // nulls/empty
             
             // first try the object's own serialization, then the hard-coded ones below
             when type-of(poData, IJsonSerializer) then
@@ -126,7 +127,7 @@ class OpenEdge.Net.HTTP.Filter.Payload.JsonBodyWriter inherits MessageWriter:
             
             when type-of(poData, JsonConstruct) then
             do on error undo, throw:
-                // get the JSON 
+                // get the JSON
                 cast(poData, JsonConstruct):Write(mJson).
                 assign iBytesWritten = get-size(mJson).
                 
@@ -176,13 +177,13 @@ class OpenEdge.Net.HTTP.Filter.Payload.JsonBodyWriter inherits MessageWriter:
                        .
                 if JsonExtensions eq ?
                 or fileExt eq ?
-                or lookup(fileExt, JsonBodyWriter:JsonExtensions) eq 0 
+                or lookup(fileExt, JsonBodyWriter:JsonExtensions) eq 0
                 then
-                    return error new AppError(substitute('Unsupported file extension .&1 for JSON (supported=&2)', 
+                    return error new AppError(substitute('Unsupported file extension .&1 for JSON (supported=&2)',
                                                          fileExt, JsonBodyWriter:JsonExtensions)
                                              , 0).
                 else
-                    return WriteFileStream(fileStream). 
+                    return WriteFileStream(fileStream).
             end.    // file stream
             
             when type-of(poData, Progress.Lang.Error) then

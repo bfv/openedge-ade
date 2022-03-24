@@ -438,6 +438,7 @@ for each ds_columns
           with frame ds_make.
       
     /***** create/adjust s_ttb_tbl record *****/
+      /*if p_ttb_tbl = 0*/
       if reuse = 1
        then do: /* use previously created s_ttb_tbl-record */
         assign

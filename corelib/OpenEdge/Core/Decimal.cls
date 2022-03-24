@@ -36,7 +36,7 @@ class OpenEdge.Core.Decimal implements IDecimalHolder:
              return 
                     this-object:Value = ocDec:Value.
          end.
-         else 
+         else
          if type-of(PO, IDecimalHolder) then
          do:
            valCompare = dynamic-property(PO, 'Value').
@@ -46,5 +46,4 @@ class OpenEdge.Core.Decimal implements IDecimalHolder:
          return false.
     end method.
 end class.
-
 
